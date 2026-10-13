@@ -148,6 +148,12 @@ class Config:
     pre_layers: int = 0     # >0: 背景光 → 前 Sin レイヤ（前処理光）→ 入力 → 後 Sin レイヤ。前段の層数
     pre_P: int = 64         # 前段レイヤの区画数
     pre_A0: float = 1.0     # 前段レイヤの振幅の初期倍率（小さくすると「照明そのまま」から学習が始まる）
+    blur: str = ""          # 滲み層（入力と最初のレイヤの間）。std: 前後 r 文字とのばらつき（標準偏差）を場にする /
+                            #   ustd: 元の場 × ばらつき / mean: 前後 r 文字の平均（対照）
+    blur_r: int = 1         # 滲み層の半径（文字数）
+                            #   cstd: 前の r 文字と自分だけのばらつき（因果的）/ diff: 直前の文字との差 u_n − u_{n−1}
+    blur_mix: bool = False  # True: 色0 に元の入力、色1 に滲みを載せる（M≥2 が必要。色どうしは強度で足される）
+    input_ft: bool = False  # True: 入力（文字列の波形）をフーリエ変換してからレイヤへ渡す
     lens_every: int = 0     # >0: その層数ごとに固定レンズ（フーリエ変換）を挟み、実空間と周波数空間を交互にする
 
 
@@ -229,6 +235,43 @@ class SinWave(nn.Module):
                 layer.logz = nn.Parameter(torch.tensor(math.log(self.cfg.z), device=self.t.device))
             self.layers.append(layer)
 
+    def init_w(self, kind: str, tag: str | None = None):
+        """角速度 ω の初期配置を決め直す（区間 [2π/L, π] に写す）。
+        logrand: 対数一様の乱数（既定）/ rand: 一様の乱数 / grid: 等間隔 / prime: 素数 p_n /
+        zeta: リーマンゼータのゼロ点の高さ t_n（間隔が反発しあい、近づきすぎない）。
+        各層が全帯域の値を持つよう、小さい順の値を層に交互に配る。"""
+        if kind == "logrand":
+            return
+        layers = [l for l in self.layers if tag is None or l.tag == tag]
+        N = sum(l.w.numel() for l in layers)
+        if kind == "rand":
+            v = torch.rand(N, generator=torch.Generator().manual_seed(4321))
+        elif kind == "grid":
+            v = torch.arange(N, dtype=torch.float64)
+        elif kind == "prime":
+            ps, x = [], 2
+            while len(ps) < N:
+                if all(x % p for p in ps if p * p <= x):
+                    ps.append(x)
+                x += 1
+            v = torch.tensor(ps, dtype=torch.float64)
+        elif kind == "zeta":
+            import pathlib
+            zs = [float(l) for l in (pathlib.Path(__file__).parent / "zeta_zeros.txt").read_text().split()]
+            assert len(zs) >= N, f"ゼロ点が足りない ({len(zs)} < {N})。tools/zeta_zeros.py で増やす"
+            v = torch.tensor(zs[:N], dtype=torch.float64)
+        else:
+            raise ValueError(kind)
+        v = (v - v.min()) / (v.max() - v.min())
+        lo, hi = 2 * math.pi / self.cfg.L, math.pi
+        v = (lo + (hi - lo) * v).sort().values.float()
+        nl = len(layers)
+        for d, l in enumerate(layers):
+            vals = v[d::nl][: l.w.numel()]   # 層 d には d, d+nl, d+2nl, ... 番目の値
+            perm = torch.randperm(vals.numel(), generator=torch.Generator().manual_seed(99 + d))
+            vals = vals[perm]                 # 区画の並びは全方式で共通の固定順列（空間的なチャープを作らない）
+            l.w.data = vals.reshape(l.w.shape).to(l.w.device)
+
     def layer_H(self, d, layer):
         cfg = self.cfg
         if cfg.z_sched == "const":
@@ -266,6 +309,7 @@ class SinWave(nn.Module):
             u = u * self.illumination()[None]
         elif self.cfg.incoh > 0:   # 位相のばらつきを時間方向に並べる（T と同じ扱いで最後に平均される）
             u = u * self.psi[None, :, None, :]
+        u = self.preprocess(u)
         u_in = u
         u = self.field(u, active)                          # (B, T, M, L)
         if self.cfg.feedback == "field":     # 出力光の一部を入力側の背景光として戻し、もう一周
@@ -281,7 +325,32 @@ class SinWave(nn.Module):
         if self.cfg.far:
             u = torch.fft.fftshift(torch.fft.fft(u, norm="ortho"), dim=-1)  # 集光レンズ
         inten = (u.abs() ** 2).sum(2).mean(1)              # 波長は非干渉に足し、時間は平均 (B, L)
-        return inten / inten.mean(-1, keepdim=True)
+        return inten / (inten.mean(-1, keepdim=True) + 1e-12)
+
+    def preprocess(self, u):
+        """入力と最初のレイヤの間の処理（滲み層・入力のフーリエ変換）。u: (B, T, M, L)"""
+        cfg = self.cfg
+        if cfg.blur:
+            S, r = cfg.slot, cfg.blur_r
+            src = u[:, :, :1] if cfg.blur_mix else u
+            if cfg.blur == "diff":
+                v = (src - torch.roll(src, S, dims=-1)) / 2
+            else:
+                ks = range(0, r + 1) if cfg.blur == "cstd" else range(-r, r + 1)   # roll(+kS) = k 文字前
+                nb = torch.stack([torch.roll(src, k * S, dims=-1) for k in ks])     # 前後 r 文字（巡回）
+                mean = nb.mean(0)
+                if cfg.blur == "mean":
+                    v = mean
+                else:
+                    std = ((nb.abs().pow(2).mean(0) - mean.abs().pow(2)).clamp(min=0) + 1e-4).sqrt()  # 全部同じ文字でも 0 除算しない
+                    v = src * std if cfg.blur == "ustd" else std.to(u.dtype)
+            if cfg.blur_mix:
+                u = torch.cat([u[:, :, :1], v, u[:, :, 2:]], dim=2)
+            else:
+                u = v
+        if cfg.input_ft:
+            u = torch.fft.fftshift(torch.fft.fft(u, norm="ortho"), dim=-1)
+        return u
 
     def illumination(self):
         """前処理光 (P_illum, M, L)。源は平面波（incoh>0 なら照明パターンごと）。入力に依存しない。"""
