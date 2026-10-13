@@ -98,6 +98,8 @@ if __name__ == "__main__":
     ap.add_argument("--test", type=int, default=10000)
     ap.add_argument("--parallel", action="store_true")
     ap.add_argument("--bias", action="store_true")
+    ap.add_argument("--incoh", type=int, default=0)
+    ap.add_argument("--illum", default="random")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
     torch.manual_seed(a.seed)
@@ -108,7 +110,7 @@ if __name__ == "__main__":
         res[f"ngram{o}"] = (round(acc, 4), round(ce, 3))
     print(json.dumps(res, ensure_ascii=False), flush=True)
 
-    cfg = Config(L=a.L, M=a.M, C=a.V, far=True, bias=a.bias)
+    cfg = Config(L=a.L, M=a.M, C=a.V, far=True, bias=a.bias, incoh=a.incoh, slot=a.S, illum=a.illum)
     enc = lambda xs: encode(xs, cfg.L, cfg.M, DEV, a.S, "freq")
     X, Y = enc([x for x, _, _ in tr]), torch.tensor([y for _, y, _ in tr], device=DEV)
     Xt, Yt = enc([x for x, _, _ in te]), torch.tensor([y for _, y, _ in te], device=DEV)
