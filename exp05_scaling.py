@@ -35,11 +35,13 @@ if __name__ == "__main__":
     ap.add_argument("--joint", action="store_true")
     ap.add_argument("--incoh", type=int, default=0)
     ap.add_argument("--illum", default="random")
+    ap.add_argument("--blur", default="")
+    ap.add_argument("--blur_r", type=int, default=1)
     a = ap.parse_args()
     torch.manual_seed(a.seed)
     sk = task_skills(a.n, seed=a.seed)
     C = 4 * a.n
-    cfg = Config(L=a.L, C=C, far=True, incoh=a.incoh, slot=a.S, illum=a.illum)
+    cfg = Config(L=a.L, C=C, far=True, incoh=a.incoh, slot=a.S, illum=a.illum, blur=a.blur, blur_r=a.blur_r)
     enc = lambda xs: encode(xs, cfg.L, cfg.M, DEV, a.S, "freq")
     data = [(enc(tr[0]), torch.tensor(tr[1], device=DEV), enc(te[0]), torch.tensor(te[1], device=DEV))
             for tr, te in sk]
@@ -52,7 +54,7 @@ if __name__ == "__main__":
         paths.append(m)
     par = Parallel(paths)
     Xt_all = torch.cat([d[2] for d in data]); Yt_all = torch.cat([d[3] for d in data])
-    res = dict(n=a.n, seed=a.seed, incoh=a.incoh, illum=a.illum,
+    res = dict(n=a.n, seed=a.seed, incoh=a.incoh, illum=a.illum, blur=a.blur, blur_r=a.blur_r,
                alone_task=sum(alone) / a.n,
                merged_task=sum(acc(par, d[2], d[3], 4 * i) for i, d in enumerate(data)) / a.n,
                merged_class=acc(par, Xt_all, Yt_all),
