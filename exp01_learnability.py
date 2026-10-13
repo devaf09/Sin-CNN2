@@ -69,11 +69,12 @@ if __name__ == "__main__":
     ap.add_argument("--lens_every", type=int, default=0)
     ap.add_argument("--norepeat", action="store_true", help="入力を繰り返さず1回だけ置く")
     ap.add_argument("--pre", type=int, default=0, help="前処理光の Sin レイヤ数")
+    ap.add_argument("--pre_A0", type=float, default=1.0)
     ap.add_argument("--dw", type=int, default=4, help="検出窓幅。0 で出力面を C 等分")
     a = ap.parse_args()
     task = {"words": task_words, "topic": task_topic, "order": task_order, "skills4": task_skills4}[a.task]()
     C = max(task[0][1]) + 1
-    cfg = Config(L=a.L, M=a.M, z=a.z, C=C, nonlin=a.nonlin, T=a.T, far=a.far, incoh=a.incoh, slot=a.S, z_sched=a.z_sched, illum=a.illum, feedback=a.feedback, out_pad=a.out_pad, z_out=a.z_out, detlog=a.detlog, diff=a.diff, lens_every=a.lens_every, pre_layers=a.pre, det_width=a.dw or a.L // C)
+    cfg = Config(L=a.L, M=a.M, z=a.z, C=C, nonlin=a.nonlin, T=a.T, far=a.far, incoh=a.incoh, slot=a.S, z_sched=a.z_sched, illum=a.illum, feedback=a.feedback, out_pad=a.out_pad, z_out=a.z_out, detlog=a.detlog, diff=a.diff, lens_every=a.lens_every, pre_layers=a.pre, pre_A0=a.pre_A0, det_width=a.dw or a.L // C)
     t0 = time.time()
     m, tr, te = train(task, cfg, a.D, a.K, a.mode, a.steps, a.lr, seed=a.seed, log=True, S=a.S, enc=a.enc, P=a.P, repeat=not a.norepeat)
     print(json.dumps(dict(vars(a), params=m.n_params(), train=round(tr, 4), test=round(te, 4),

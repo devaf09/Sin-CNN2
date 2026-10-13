@@ -16,8 +16,8 @@ from sinwave.tasks import task_skills
 
 
 @torch.no_grad()
-def acc(m, X, Y, lo=None):
-    lg = m(X)
+def acc(m, X, Y, lo=None, **kw):
+    lg = m(X, **kw)
     if lo is not None:
         return (lg[:, lo:lo + 4].argmax(1) + lo == Y).float().mean().item()
     return (lg.argmax(1) == Y).float().mean().item()
@@ -46,7 +46,8 @@ if __name__ == "__main__":
     paths, alone = [], []
     for i, (X, Y, Xt, Yt) in enumerate(data):
         m = new_model(cfg, a.D, a.P, f"s{i}", a.seed + 100 * i)
-        fit_path(m, X, Y, list(range(4 * i, 4 * i + 4)), steps=a.steps)
+        m.own = list(range(4 * i, 4 * i + 4))
+        fit_path(m, X, Y, m.own, steps=a.steps)
         alone.append(acc(m, Xt, Yt, 4 * i))
         paths.append(m)
     par = Parallel(paths)
@@ -55,6 +56,7 @@ if __name__ == "__main__":
                alone_task=sum(alone) / a.n,
                merged_task=sum(acc(par, d[2], d[3], 4 * i) for i, d in enumerate(data)) / a.n,
                merged_class=acc(par, Xt_all, Yt_all),
+               gate_class=acc(par, Xt_all, Yt_all, mode="gate"),
                params_merged=sum(p.n_params() for p in paths))
     # 1 本ずつ外したとき、残りの技能の class 精度
     if a.n > 1:

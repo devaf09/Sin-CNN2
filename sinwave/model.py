@@ -147,6 +147,7 @@ class Config:
     diff: bool = False      # True: 差動検出。1クラスに検出器2つ (+/-)、logit = gain·(I+ − I−)/(I+ + I−)
     pre_layers: int = 0     # >0: 背景光 → 前 Sin レイヤ（前処理光）→ 入力 → 後 Sin レイヤ。前段の層数
     pre_P: int = 64         # 前段レイヤの区画数
+    pre_A0: float = 1.0     # 前段レイヤの振幅の初期倍率（小さくすると「照明そのまま」から学習が始まる）
     lens_every: int = 0     # >0: その層数ごとに固定レンズ（フーリエ変換）を挟み、実空間と周波数空間を交互にする
 
 
@@ -203,7 +204,9 @@ class SinWave(nn.Module):
         if cfg.pre_layers > 0:
             g = torch.Generator().manual_seed(777)
             for _ in range(cfg.pre_layers):
-                self.pre.append(SinLayer(1, "phase", L, "pre", g, cfg.pre_P))
+                layer = SinLayer(1, "phase", L, "pre", g, cfg.pre_P)
+                layer.A.data *= cfg.pre_A0
+                self.pre.append(layer)
         if cfg.feedback:
             self.fb_beta = nn.Parameter(torch.tensor(cfg.fb))
         self.bias = nn.Parameter(torch.zeros(cfg.C), requires_grad=cfg.bias)
@@ -313,6 +316,22 @@ class Parallel(nn.Module):
         super().__init__()
         self.paths = nn.ModuleList(paths)
 
-    def forward(self, u0, active=None):
-        outs = [p.detect(p.intensity(u0)) for p in self.paths if active is None or p.layers[0].tag in active]
-        return sum(outs) / len(outs)   # 強度の平均を検出するのと同じ（各光路の温度・背景光も平均される）
+    def forward(self, u0, active=None, mode: str = "avg"):
+        paths = [p for p in self.paths if active is None or p.layers[0].tag in active]
+        if mode == "avg":
+            outs = [p.detect(p.intensity(u0)) for p in paths]
+            return sum(outs) / len(outs)   # 強度の平均を検出するのと同じ（各光路の温度・背景光も平均される）
+        if mode == "gate":
+            # 各光路について「自分の担当検出器に入った光の割合 r」を技能の確信度にする。
+            # スコア = log r_i + (光路 i の担当検出器内での log-softmax)。担当外のクラスは -inf。
+            C = paths[0].det.shape[0]
+            out = torch.full((u0.shape[0], C), -1e9, device=u0.device)
+            for p in paths:
+                inten = p.intensity(u0)
+                f = inten @ p.det.T / p.cfg.det_width                # (B, C) 各検出器の強度
+                own = torch.tensor(p.own, device=u0.device)
+                r = f[:, own].sum(1) / (f.sum(1) + 1e-9)
+                lg = p.detect(inten)[:, own]
+                out[:, own] = torch.log(r + 1e-9)[:, None] + torch.log_softmax(lg, 1)
+            return out
+        raise ValueError(mode)
