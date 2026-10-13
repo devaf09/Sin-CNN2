@@ -57,8 +57,9 @@ def char_wave(c: str, m: int, S: int, enc: str) -> list[float]:
     raise ValueError(enc)
 
 
-def encode(texts: list[str], L: int, M: int, device, S: int = 1, enc: str = "phase") -> torch.Tensor:
-    """文字列を長さ L まで繰り返して位相場にする（1文字 = S 標本）。戻り値 (B, M, L) complex64。"""
+def encode(texts: list[str], L: int, M: int, device, S: int = 1, enc: str = "phase", repeat: bool = True) -> torch.Tensor:
+    """文字列を位相場にする（1文字 = S 標本）。repeat=True なら長さ L まで繰り返し、
+    False なら先頭に1回だけ置いて残りは暗く（0）する。戻り値 (B, M, L) complex64。"""
     chars = sorted(set("".join(texts)))
     cid = {c: i for i, c in enumerate(chars)}
     table = torch.tensor([[char_wave(c, m, S, enc) for m in range(M)] for c in chars])  # (V, M, S)
@@ -69,6 +70,9 @@ def encode(texts: list[str], L: int, M: int, device, S: int = 1, enc: str = "pha
     for i in range(0, len(texts), 4096):
         w = tab[ids[i:i + 4096].to(device)]                 # (b, n_chars, M, S)
         out[i:i + 4096] = w.permute(0, 2, 1, 3).reshape(w.shape[0], M, -1)[..., :L]
+    if not repeat:
+        lens = torch.tensor([min(len(s) * S, L) for s in texts], device=device)
+        out = out * (torch.arange(L, device=device)[None] < lens[:, None])[:, None]
     return out
 
 
