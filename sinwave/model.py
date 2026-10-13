@@ -132,6 +132,16 @@ class Config:
     incoh: int = 0          # >0: 非コヒーレント光源。文字スロットごとにランダム位相を incoh 通り与えて平均する
     slot: int = 1           # 文字スロットの幅（= 符号化の S）
     T: int = 0              # 0: 位置 t を時間とみなす。>0: 本物の時間 τ=0..T-1 で振動させ、検出器で時間平均
+    # ---- 光学的な改良の候補（実験10）
+    z_sched: str = "const"  # const: 全層 z / geom: z/4 → 4z の等比 / learn: 層ごとに z を学習（4つ目のパラメータ）
+    illum: str = "random"   # incoh>0 のときの照明パターン。random / tilt（入射角を変えた平面波）/ hadamard（0/π）
+    feedback: str = ""      # "" / field: 出力の場を入力に足して2周 / phase: 出力強度で入力の位相を変えて2周（非線形）
+    fb: float = 0.3         # 帰還の強さの初期値（学習する。スカラ1個）
+    out_pad: int = 1        # >1: 最後にレイヤの out_pad 倍の広さの出力面へ z_out 伝搬して検出（周期境界なし）
+    z_out: float = 0.0
+    detlog: bool = False    # True: 検出器を対数応答にする（logit = gain·log 強度）
+    diff: bool = False      # True: 差動検出。1クラスに検出器2つ (+/-)、logit = gain·(I+ − I−)/(I+ + I−)
+    lens_every: int = 0     # >0: その層数ごとに固定レンズ（フーリエ変換）を挟み、実空間と周波数空間を交互にする
 
 
 class SinWave(nn.Module):
@@ -152,21 +162,45 @@ class SinWave(nn.Module):
         kz2 = k**2 - kx[None] ** 2
         kz = torch.sqrt(kz2.clamp(min=0))
         decay = torch.sqrt((-kz2).clamp(min=0))
+        self.register_buffer("kz", kz)
+        self.register_buffer("decay", decay)
         H = torch.polar(torch.exp(-decay * cfg.z), kz * cfg.z)
         self.register_buffer("H", H)
-        self.set_detectors(cfg.C)
+        self.L_out = L * cfg.out_pad
+        if cfg.out_pad > 1:   # 広い出力面への伝搬（零詰めして周期境界の影響をなくす）
+            kxo = 2 * math.pi * torch.fft.fftfreq(self.L_out)
+            kz2o = k**2 - kxo[None] ** 2
+            Ho = torch.polar(torch.exp(-torch.sqrt((-kz2o).clamp(min=0)) * cfg.z_out),
+                             torch.sqrt(kz2o.clamp(min=0)) * cfg.z_out)
+            self.register_buffer("H_out", Ho)
+        self.set_detectors(2 * cfg.C if cfg.diff else cfg.C)
         if cfg.incoh > 0:
-            g = torch.Generator().manual_seed(12345)
             n_slots = -(-L // cfg.slot)
-            psi = 2 * math.pi * torch.rand(cfg.incoh, n_slots, generator=g)
+            j = torch.arange(cfg.incoh, dtype=torch.float32)[:, None]
+            sl = torch.arange(n_slots, dtype=torch.float32)[None]
+            if cfg.illum == "random":
+                g = torch.Generator().manual_seed(12345)
+                psi = 2 * math.pi * torch.rand(cfg.incoh, n_slots, generator=g)
+            elif cfg.illum == "tilt":      # j 番目の照明 = スロットあたり 2πj/n 傾いた平面波
+                psi = 2 * math.pi * j * sl / n_slots
+            elif cfg.illum == "hadamard":  # ウォルシュ・アダマール符号（0/π）
+                bits = (j.long() & sl.long())
+                par = torch.zeros_like(bits)
+                for b in range(12):
+                    par ^= (bits >> b) & 1
+                psi = math.pi * par.float()
+            else:
+                raise ValueError(cfg.illum)
             psi = psi.repeat_interleave(cfg.slot, -1)[:, :L]
             self.register_buffer("psi", torch.polar(torch.ones_like(psi), psi))   # (incoh, L)
+        if cfg.feedback:
+            self.fb_beta = nn.Parameter(torch.tensor(cfg.fb))
         self.bias = nn.Parameter(torch.zeros(cfg.C), requires_grad=cfg.bias)
 
     # 検出器：出力面に C 個の窓を等間隔に置く
     def set_detectors(self, C: int, offset: int = 0, n_total: int | None = None):
         n_total = n_total or C
-        L, w = self.cfg.L, self.cfg.det_width
+        L, w = self.L_out, self.cfg.det_width
         centers = [int((i + 0.5) * L / n_total) for i in range(offset, offset + C)]
         mask = torch.zeros(C, L)
         for i, c in enumerate(centers):
@@ -176,16 +210,34 @@ class SinWave(nn.Module):
     def add_layers(self, n: int, K: int = 1, mode: str = "phase", tag: str = "base", seed: int = 0, P: int = 1):
         g = torch.Generator().manual_seed(seed)
         for _ in range(n):
-            self.layers.append(SinLayer(K, mode, self.cfg.L, tag, g, P).to(self.t.device))
+            layer = SinLayer(K, mode, self.cfg.L, tag, g, P).to(self.t.device)
+            if self.cfg.z_sched == "learn":
+                layer.logz = nn.Parameter(torch.tensor(math.log(self.cfg.z), device=self.t.device))
+            self.layers.append(layer)
 
-    def propagate(self, u):
-        return torch.fft.ifft(torch.fft.fft(u) * self.H[None], dim=-1)
+    def layer_H(self, d, layer):
+        cfg = self.cfg
+        if cfg.z_sched == "const":
+            return self.H
+        if cfg.z_sched == "geom":
+            n = len(self.layers)
+            z = cfg.z * 4 ** (2 * d / max(n - 1, 1) - 1)
+        elif cfg.z_sched == "learn":
+            z = layer.logz.exp()
+        else:
+            raise ValueError(cfg.z_sched)
+        return torch.polar(torch.exp(-self.decay * z), self.kz * z)
+
+    def propagate(self, u, H=None):
+        return torch.fft.ifft(torch.fft.fft(u) * (self.H if H is None else H)[None], dim=-1)
 
     def field(self, u, active=None):
-        for layer in self.layers:
+        for d, layer in enumerate(self.layers):
             if active is not None and layer.tag not in active:
                 continue
-            u = self.propagate(layer(u, self.tt, self.lam_ratio))
+            u = self.propagate(layer(u, self.tt, self.lam_ratio), self.layer_H(d, layer))
+            if self.cfg.lens_every and (d + 1) % self.cfg.lens_every == 0:
+                u = torch.fft.fftshift(torch.fft.fft(u, norm="ortho"), dim=-1)
             # 増幅: レイヤを通るたびに平均強度を 1 に戻す（減衰・発散で値が潰れないように。位相の情報は変えない）
             u = u / (u.abs().pow(2).mean((-2, -1), keepdim=True).sqrt() + 1e-12)
             if self.cfg.nonlin > 0:
@@ -198,20 +250,37 @@ class SinWave(nn.Module):
         u = u0[:, None]
         if self.cfg.incoh > 0:   # 位相のばらつきを時間方向に並べる（T と同じ扱いで最後に平均される）
             u = u * self.psi[None, :, None, :]
+        u_in = u
         u = self.field(u, active)                          # (B, T, M, L)
+        if self.cfg.feedback == "field":     # 出力光の一部を入力側の背景光として戻し、もう一周
+            u = self.field(u_in + self.fb_beta * u, active)
+        elif self.cfg.feedback == "phase":   # 出力の強度に応じて入力の位相を変え、もう一周（非線形）
+            I = u.abs() ** 2
+            I = I / I.mean(-1, keepdim=True)
+            u = self.field(u_in * torch.polar(torch.ones_like(I), self.fb_beta * I), active)
+        if self.cfg.out_pad > 1:            # レイヤより広い出力面へ伝搬
+            pad = (self.L_out - self.cfg.L) // 2
+            u = torch.nn.functional.pad(u, (pad, self.L_out - self.cfg.L - pad))
+            u = torch.fft.ifft(torch.fft.fft(u) * self.H_out[None], dim=-1)
         if self.cfg.far:
             u = torch.fft.fftshift(torch.fft.fft(u, norm="ortho"), dim=-1)  # 集光レンズ
         inten = (u.abs() ** 2).sum(2).mean(1)              # 波長は非干渉に足し、時間は平均 (B, L)
         return inten / inten.mean(-1, keepdim=True)
 
     def detect(self, inten):
-        return self.gain * (inten @ self.det.T / self.cfg.det_width) + self.bias   # (B, C)
+        f = inten @ self.det.T / self.cfg.det_width
+        if self.cfg.diff:
+            fp, fm = f[:, 0::2], f[:, 1::2]
+            f = (fp - fm) / (fp + fm + 1e-6)
+        if self.cfg.detlog:
+            f = torch.log(f + 1e-3)
+        return self.gain * f + self.bias   # (B, C)
 
     def forward(self, u0, active=None):
         return self.detect(self.intensity(u0, active))
 
     def n_params(self):
-        return sum(p.numel() for p in self.layers.parameters())
+        return sum(p.numel() for p in self.layers.parameters())   # logz (z_sched=learn) も含む
 
 
 class Parallel(nn.Module):
