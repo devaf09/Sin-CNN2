@@ -145,6 +145,8 @@ class Config:
     z_out: float = 0.0
     detlog: bool = False    # True: 検出器を対数応答にする（logit = gain·log 強度）
     diff: bool = False      # True: 差動検出。1クラスに検出器2つ (+/-)、logit = gain·(I+ − I−)/(I+ + I−)
+    pre_layers: int = 0     # >0: 背景光 → 前 Sin レイヤ（前処理光）→ 入力 → 後 Sin レイヤ。前段の層数
+    pre_P: int = 64         # 前段レイヤの区画数
     lens_every: int = 0     # >0: その層数ごとに固定レンズ（フーリエ変換）を挟み、実空間と周波数空間を交互にする
 
 
@@ -197,6 +199,11 @@ class SinWave(nn.Module):
                 raise ValueError(cfg.illum)
             psi = psi.repeat_interleave(cfg.slot, -1)[:, :L]
             self.register_buffer("psi", torch.polar(torch.ones_like(psi), psi))   # (incoh, L)
+        self.pre = nn.ModuleList()
+        if cfg.pre_layers > 0:
+            g = torch.Generator().manual_seed(777)
+            for _ in range(cfg.pre_layers):
+                self.pre.append(SinLayer(1, "phase", L, "pre", g, cfg.pre_P))
         if cfg.feedback:
             self.fb_beta = nn.Parameter(torch.tensor(cfg.fb))
         self.bias = nn.Parameter(torch.zeros(cfg.C), requires_grad=cfg.bias)
@@ -252,7 +259,9 @@ class SinWave(nn.Module):
     def intensity(self, u0, active=None):
         """出力面の強度 (B, L)。平均 1 に正規化。"""
         u = u0[:, None]
-        if self.cfg.incoh > 0:   # 位相のばらつきを時間方向に並べる（T と同じ扱いで最後に平均される）
+        if len(self.pre) > 0:    # 背景光を前段の Sin レイヤで整形してから、入力（透過マスク）に当てる
+            u = u * self.illumination()[None]
+        elif self.cfg.incoh > 0:   # 位相のばらつきを時間方向に並べる（T と同じ扱いで最後に平均される）
             u = u * self.psi[None, :, None, :]
         u_in = u
         u = self.field(u, active)                          # (B, T, M, L)
@@ -271,6 +280,15 @@ class SinWave(nn.Module):
         inten = (u.abs() ** 2).sum(2).mean(1)              # 波長は非干渉に足し、時間は平均 (B, L)
         return inten / inten.mean(-1, keepdim=True)
 
+    def illumination(self):
+        """前処理光 (P_illum, M, L)。源は平面波（incoh>0 なら照明パターンごと）。入力に依存しない。"""
+        src = self.psi if self.cfg.incoh > 0 else torch.ones(1, self.cfg.L, dtype=torch.complex64, device=self.t.device)
+        v = src[None, :, None, :].expand(1, -1, self.cfg.M, -1)
+        for d, layer in enumerate(self.pre):
+            v = self.propagate(layer(v, self.tt, self.lam_ratio))
+            v = v / (v.abs().pow(2).mean((-2, -1), keepdim=True).sqrt() + 1e-12)
+        return v[0]
+
     def detect(self, inten):
         f = inten @ self.det.T / self.cfg.det_width
         if self.cfg.diff:
@@ -284,7 +302,7 @@ class SinWave(nn.Module):
         return self.detect(self.intensity(u0, active))
 
     def n_params(self):
-        return sum(p.numel() for p in self.layers.parameters())   # logz (z_sched=learn) も含む
+        return sum(p.numel() for p in self.layers.parameters()) + sum(p.numel() for p in self.pre.parameters())
 
 
 class Parallel(nn.Module):

@@ -101,6 +101,7 @@ if __name__ == "__main__":
     ap.add_argument("--incoh", type=int, default=0)
     ap.add_argument("--detlog", action="store_true")
     ap.add_argument("--norepeat", action="store_true")
+    ap.add_argument("--pre", type=int, default=0)
     ap.add_argument("--illum", default="random")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
@@ -112,7 +113,7 @@ if __name__ == "__main__":
         res[f"ngram{o}"] = (round(acc, 4), round(ce, 3))
     print(json.dumps(res, ensure_ascii=False), flush=True)
 
-    cfg = Config(L=a.L, M=a.M, C=a.V, far=True, bias=a.bias, incoh=a.incoh, slot=a.S, illum=a.illum, detlog=a.detlog)
+    cfg = Config(L=a.L, M=a.M, C=a.V, far=True, bias=a.bias, incoh=a.incoh, slot=a.S, illum=a.illum, detlog=a.detlog, pre_layers=a.pre)
     enc = lambda xs: encode(xs, cfg.L, cfg.M, DEV, a.S, "freq", not a.norepeat)
     X, Y = enc([x for x, _, _ in tr]), torch.tensor([y for _, y, _ in tr], device=DEV)
     Xt, Yt = enc([x for x, _, _ in te]), torch.tensor([y for _, y, _ in te], device=DEV)
