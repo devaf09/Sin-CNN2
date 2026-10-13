@@ -102,6 +102,8 @@ if __name__ == "__main__":
     ap.add_argument("--detlog", action="store_true")
     ap.add_argument("--norepeat", action="store_true")
     ap.add_argument("--pre", type=int, default=0)
+    ap.add_argument("--freeze_w", action="store_true")
+    ap.add_argument("--calib", action="store_true")
     ap.add_argument("--blur", default="")
     ap.add_argument("--input_ft", action="store_true")
     ap.add_argument("--blur_mix", action="store_true")
@@ -121,11 +123,25 @@ if __name__ == "__main__":
     X, Y = enc([x for x, _, _ in tr]), torch.tensor([y for _, y, _ in tr], device=DEV)
     Xt, Yt = enc([x for x, _, _ in te]), torch.tensor([y for _, y, _ in te], device=DEV)
     m = new_model(cfg, a.D, a.P, "all", a.seed)
+    if a.freeze_w:
+        for l in m.layers:
+            l.w.requires_grad_(False)
     m.gain.requires_grad_(True)
     m.bias.requires_grad_(a.bias)
     fit(m, X, Y, a.steps)
     res["sinwave_all"] = tuple(round(v, 4) for v in score(m, Xt, Yt))
-    res["params"] = m.n_params()
+    res["params"] = sum(p.numel() for p in m.layers.parameters() if p.requires_grad)
+    if a.calib:
+        # 確信度の尺度だけを合わせ直す: 学習後に logit 全体を 1 つの温度 τ で割り、
+        # 訓練データの一部で CE が最小になる τ を選ぶ。正解率は変わらない。CE が大きく下がれば「尺度のずれ」が原因
+        with torch.no_grad():
+            lg = torch.cat([m(X[i:i + 1024]) for i in range(0, 10000, 1024)])[:10000]
+            best = min((F.cross_entropy(lg / t, Y[:len(lg)]).item(), t) for t in [0.25, 0.35, 0.5, 0.7, 1, 1.4, 2, 3])
+            t = best[1]
+            lgt = torch.cat([m(Xt[i:i + 1024]) for i in range(0, len(Yt), 1024)])
+            res["calib_tau"] = t
+            res["sinwave_calib"] = (round((lgt.argmax(1) == Yt).float().mean().item(), 4),
+                                    round(F.cross_entropy(lgt / t, Yt).item(), 4))
     if a.parallel:
         h = torch.tensor([f for _, _, f in tr], device=DEV)
         paths = []

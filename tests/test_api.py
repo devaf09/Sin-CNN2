@@ -1,0 +1,43 @@
+"""高水準 API の動作確認（CPU、小さな設定で数十秒）。  python -m pytest tests -q  または  python tests/test_api.py"""
+import os
+import tempfile
+
+import torch
+
+from sinwave import SinWaveClassifier, merge
+from sinwave.tasks import task_skills
+
+SMALL = dict(L=512, S=128, D=4, P=16)
+
+
+def _skill(i, sk, seed=0):
+    (xtr, ytr), _ = sk[i]
+    classes = sorted(set(ytr))
+    clf = SinWaveClassifier(classes, slots=classes, n_slots=8, preset="fast", name=f"s{i}",
+                            seed=seed, device="cpu", **SMALL)
+    return clf.fit(xtr, ytr, steps=150)
+
+
+def test_fit_merge_remove_save():
+    torch.manual_seed(0)
+    sk = task_skills(2, n_train=200, n_test=100)
+    a, b = _skill(0, sk), _skill(1, sk)
+    (xa, ya), (xb, yb) = sk[0][1], sk[1][1]
+    acc_a = a.score(xa, ya)
+    assert acc_a > 0.4, acc_a                        # 4 クラスの偶然は 0.25
+    m = merge([a, b])
+    assert m.classes == a.classes + b.classes
+    assert m.score(xa + xb, ya + yb) > 0.3           # 8 クラスの偶然は 0.125
+    m.remove("s1")                                   # 取消: 外せば a 単独と完全に同じ
+    assert torch.allclose(m.logits(xa), a.logits(xa)[:, a.slots])
+    with tempfile.TemporaryDirectory() as d:         # 保存と読み込み
+        path = os.path.join(d, "a.pt")
+        a.save(path)
+        a2 = SinWaveClassifier.load(path, device="cpu")
+        assert torch.allclose(a2.logits(xa), a.logits(xa))
+    assert merge([a, b], mode="gate").predict(xa[:3])
+
+
+if __name__ == "__main__":
+    test_fit_merge_remove_save()
+    print("ok")
