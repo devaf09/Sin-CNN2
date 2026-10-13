@@ -1,0 +1,2 @@
+{"n": 2, "seed": 0, "incoh": 8, "alone_task": 0.942, "merged_task": 0.93, "merged_class": 0.884, "params_merged": 6144, "minus_last_class": 0.94, "unigram_class": 0.952, "joint_class": 0.916}
+{"n": 4, "seed": 0, "incoh": 8, "alone_task": 0.946, "merged_task": 0.912, "merged_class": 0.809, "params_merged": 12288, "minus_last_class": 0.8293, "unigram_class": 0.951, "joint_class": 0.907}

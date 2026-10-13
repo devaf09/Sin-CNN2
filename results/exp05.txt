@@ -1,0 +1,3 @@
+{"n": 2, "seed": 0, "alone_task": 0.902, "merged_task": 0.88, "merged_class": 0.812, "params_merged": 6144, "minus_last_class": 0.876, "unigram_class": 0.952, "joint_class": 0.838}
+{"n": 4, "seed": 0, "alone_task": 0.896, "merged_task": 0.82, "merged_class": 0.664, "params_merged": 12288, "minus_last_class": 0.7053, "unigram_class": 0.951, "joint_class": 0.794}
+{"n": 5, "seed": 0, "alone_task": 0.9064, "merged_task": 0.832, "merged_class": 0.6536, "params_merged": 15360, "minus_last_class": 0.674, "unigram_class": 0.9504, "joint_class": 0.7856}

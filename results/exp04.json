@@ -1,0 +1,134 @@
+{
+ "1": {
+  "A_alone": {
+   "A_task": 0.8917,
+   "A_class": 0.8859,
+   "B_task": 0.2174,
+   "B_class": 0.058
+  },
+  "B_alone": {
+   "A_task": 0.2727,
+   "A_class": 0.0716,
+   "B_task": 0.9234,
+   "B_class": 0.9068
+  },
+  "parallel_merge": {
+   "A_task": 0.8704,
+   "A_class": 0.8162,
+   "B_task": 0.8986,
+   "B_class": 0.8282
+  },
+  "add_naive": {
+   "A_task": 0.2689,
+   "A_class": 0.087,
+   "B_task": 0.9151,
+   "B_class": 0.8903
+  },
+  "add_keepA_data": {
+   "A_task": 0.8627,
+   "A_class": 0.8124,
+   "B_task": 0.8841,
+   "B_class": 0.8261
+  },
+  "add_keep_probe": {
+   "A_task": 0.7234,
+   "A_class": 0.6441,
+   "B_task": 0.8427,
+   "B_class": 0.7453
+  },
+  "joint": {
+   "A_task": 0.9052,
+   "A_class": 0.853,
+   "B_task": 0.9234,
+   "B_class": 0.8944
+  }
+ },
+ "2": {
+  "A_alone": {
+   "A_task": 0.899,
+   "A_class": 0.8893,
+   "B_task": 0.2701,
+   "B_class": 0.0763
+  },
+  "B_alone": {
+   "A_task": 0.268,
+   "A_class": 0.0913,
+   "B_task": 0.9196,
+   "B_class": 0.9052
+  },
+  "parallel_merge": {
+   "A_task": 0.8816,
+   "A_class": 0.8214,
+   "B_task": 0.8866,
+   "B_class": 0.7938
+  },
+  "add_naive": {
+   "A_task": 0.2971,
+   "A_class": 0.1223,
+   "B_task": 0.9134,
+   "B_class": 0.8866
+  },
+  "add_keepA_data": {
+   "A_task": 0.8854,
+   "A_class": 0.8369,
+   "B_task": 0.8722,
+   "B_class": 0.8124
+  },
+  "add_keep_probe": {
+   "A_task": 0.732,
+   "A_class": 0.666,
+   "B_task": 0.8206,
+   "B_class": 0.7072
+  },
+  "joint": {
+   "A_task": 0.9087,
+   "A_class": 0.8738,
+   "B_task": 0.8887,
+   "B_class": 0.8247
+  }
+ },
+ "3": {
+  "A_alone": {
+   "A_task": 0.9313,
+   "A_class": 0.9208,
+   "B_task": 0.3038,
+   "B_class": 0.0942
+  },
+  "B_alone": {
+   "A_task": 0.2354,
+   "A_class": 0.0833,
+   "B_task": 0.9231,
+   "B_class": 0.9077
+  },
+  "parallel_merge": {
+   "A_task": 0.9146,
+   "A_class": 0.8688,
+   "B_task": 0.9173,
+   "B_class": 0.8327
+  },
+  "add_naive": {
+   "A_task": 0.3,
+   "A_class": 0.1021,
+   "B_task": 0.9135,
+   "B_class": 0.8865
+  },
+  "add_keepA_data": {
+   "A_task": 0.8958,
+   "A_class": 0.8479,
+   "B_task": 0.8962,
+   "B_class": 0.8442
+  },
+  "add_keep_probe": {
+   "A_task": 0.7938,
+   "A_class": 0.7083,
+   "B_task": 0.8288,
+   "B_class": 0.7346
+  },
+  "joint": {
+   "A_task": 0.9208,
+   "A_class": 0.8625,
+   "B_task": 0.8865,
+   "B_class": 0.8462
+  }
+ }
+}
