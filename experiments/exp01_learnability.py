@@ -87,13 +87,16 @@ if __name__ == "__main__":
     ap.add_argument("--readout", default="win")
     ap.add_argument("--k0", type=int, default=1)
     ap.add_argument("--dk", type=int, default=1)
+    ap.add_argument("--diff_mode", default="ratio", help="差動検出の形 ratio / sub（単純な差）")
+    ap.add_argument("--nl", default="", help="thresh: 各レイヤの後の閾値の増幅曲線")
+    ap.add_argument("--nl_theta", type=float, default=0.5)
     ap.add_argument("--w_init", default="logrand", help="ω の初期配置 logrand/rand/grid/prime/zeta")
     ap.add_argument("--freeze_w", action="store_true", help="ω を初期値のまま固定")
     ap.add_argument("--dw", type=int, default=4, help="検出窓幅。0 で出力面を C 等分")
     a = ap.parse_args()
     task = {"words": task_words, "topic": task_topic, "order": task_order, "skills4": task_skills4}[a.task]()
     C = max(task[0][1]) + 1
-    cfg = Config(L=a.L, M=a.M, z=a.z, C=C, nonlin=a.nonlin, T=a.T, far=a.far, incoh=a.incoh, slot=a.S, z_sched=a.z_sched, illum=a.illum, feedback=a.feedback, out_pad=a.out_pad, z_out=a.z_out, detlog=a.detlog, diff=a.diff, lens_every=a.lens_every, pre_layers=a.pre, pre_A0=a.pre_A0, blur=a.blur, blur_r=a.blur_r, blur_mix=a.blur_mix, input_ft=a.input_ft, pat_w=a.pat_w, readout=a.readout, readout_k0=a.k0, readout_dk=a.dk, det_width=a.dw or a.L // C)
+    cfg = Config(L=a.L, M=a.M, z=a.z, C=C, nonlin=a.nonlin, T=a.T, far=a.far, incoh=a.incoh, slot=a.S, z_sched=a.z_sched, illum=a.illum, feedback=a.feedback, out_pad=a.out_pad, z_out=a.z_out, detlog=a.detlog, diff=a.diff, lens_every=a.lens_every, pre_layers=a.pre, pre_A0=a.pre_A0, blur=a.blur, blur_r=a.blur_r, blur_mix=a.blur_mix, input_ft=a.input_ft, pat_w=a.pat_w, readout=a.readout, readout_k0=a.k0, readout_dk=a.dk, diff_mode=a.diff_mode, nl=a.nl, nl_theta=a.nl_theta, det_width=a.dw or a.L // C)
     t0 = time.time()
     m, tr, te = train(task, cfg, a.D, a.K, a.mode, a.steps, a.lr, seed=a.seed, log=True, S=a.S, enc=a.enc, P=a.P, repeat=not a.norepeat, w_init=a.w_init, freeze_w=a.freeze_w)
     print(json.dumps(dict(vars(a), params=m.n_params(), train=round(tr, 4), test=round(te, 4),

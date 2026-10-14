@@ -162,7 +162,12 @@ class Config:
     out_pad: int = 1        # >1: 最後にレイヤの out_pad 倍の広さの出力面へ z_out 伝搬して検出（周期境界なし）
     z_out: float = 0.0
     detlog: bool = False    # True: 検出器を対数応答にする（logit = gain·log 強度）
-    diff: bool = False      # True: 差動検出。1クラスに検出器2つ (+/-)、logit = gain·(I+ − I−)/(I+ + I−)
+    diff: bool = False      # True: 差動検出。1クラスに検出器2つ (+/-)
+    diff_mode: str = "ratio"  # ratio: (I+ − I−)/(I+ + I−) / sub: I+ − I−（単純な差 = マイナスの明るさ、バランス検出）
+    nl: str = ""            # thresh: 各レイヤの後で、明るさがしきい値より弱い光をなめらかに絞る
+                            #   （閾値の増幅曲線。光学では可飽和吸収体。しきい値はレイヤごとに学習）
+    nl_theta: float = 0.5   # しきい値の初期値（平均の明るさ = 1 に対する比）
+    nl_tau: float = 0.25    # 曲線のなめらかさ
     readout: str = "win"    # 検出の方法。win: 集光点の窓の明るさ /
                             #   fcos: 出力面全体を縞模様 cos(2π k_c x / L) の感度で読む（全部の光を使う、符号付き）/
                             #   fabs: 出力面の明るさの模様をフーリエ変換した振幅 |FT(I)|(k_c) を読む（場の自己相関、位置不変）
@@ -269,6 +274,8 @@ class SinWave(nn.Module):
             layer = SinLayer(K, mode, self.cfg.L, tag, g, P).to(self.t.device)
             if self.cfg.z_sched == "learn":
                 layer.logz = nn.Parameter(torch.tensor(math.log(self.cfg.z), device=self.t.device))
+            if self.cfg.nl == "thresh":
+                layer.theta = nn.Parameter(torch.tensor(float(self.cfg.nl_theta), device=self.t.device))
             self.layers.append(layer)
 
     def init_w(self, kind: str, tag: str | None = None):
@@ -332,7 +339,12 @@ class SinWave(nn.Module):
             if self.cfg.lens_every and (d + 1) % self.cfg.lens_every == 0:
                 u = torch.fft.fftshift(torch.fft.fft(u, norm="ortho"), dim=-1)
             # 増幅: レイヤを通るたびに平均強度を 1 に戻す（減衰・発散で値が潰れないように。位相の情報は変えない）
-            u = u / (u.abs().pow(2).mean((-2, -1), keepdim=True).sqrt() + 1e-12)
+            # （場が全部 0 のとき平方根の微分が無限大にならないよう、補正値は平方根の内側に入れる）
+            u = u / (u.abs().pow(2).mean((-2, -1), keepdim=True) + 1e-24).sqrt()
+            if self.cfg.nl == "thresh":
+                # 閾値の増幅曲線: 明るさ（平均 1）がしきい値 θ より弱い所の光をなめらかに絞る。位相はそのまま
+                gate = torch.sigmoid((u.abs().pow(2) - layer.theta) / self.cfg.nl_tau)
+                u = u * gate
             if self.cfg.nonlin > 0:
                 inten = u.abs() ** 2
                 u = u * torch.polar(torch.ones_like(inten), self.cfg.nonlin * inten / inten.mean(-1, keepdim=True))
@@ -412,7 +424,7 @@ class SinWave(nn.Module):
         f = inten @ self.det.T / self.cfg.det_width
         if self.cfg.diff:
             fp, fm = f[:, 0::2], f[:, 1::2]
-            f = (fp - fm) / (fp + fm + 1e-6)
+            f = fp - fm if self.cfg.diff_mode == "sub" else (fp - fm) / (fp + fm + 1e-6)
         if self.cfg.detlog:
             f = torch.log(f + 1e-3)
         return self.gain * f + self.bias   # (B, C)
