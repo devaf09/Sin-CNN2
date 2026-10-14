@@ -135,3 +135,7 @@ python exp06_nextchar.py --bias --n 2 --M 1 --S 1024 --L 2048
 ## 動作環境
 
 Python 3.10 以上、PyTorch 2.0 以上。実験は RTX 3060 (12GB) で行いました。テスト: `python -m pytest tests -q`（CPU で数十秒）。
+
+## ライセンス
+
+[MIT License](LICENSE)。ただし `tools/fetch_cc100_sample.py` で取得する CC-100 のテキストはこのライセンスの対象外で、Common Crawl の利用条件に従います。

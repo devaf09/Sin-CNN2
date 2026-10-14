@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "正弦の干渉と回折だけで作る学習器（重み行列なし）: 技能の追加・取消・融合ができる文字列分類器"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
 dependencies = ["torch>=2.0"]
 
 [project.optional-dependencies]
