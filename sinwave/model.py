@@ -145,6 +145,14 @@ class Config:
     z_out: float = 0.0
     detlog: bool = False    # True: 検出器を対数応答にする（logit = gain·log 強度）
     diff: bool = False      # True: 差動検出。1クラスに検出器2つ (+/-)、logit = gain·(I+ − I−)/(I+ + I−)
+    readout: str = "win"    # 検出の方法。win: 集光点の窓の明るさ /
+                            #   fcos: 出力面全体を縞模様 cos(2π k_c x / L) の感度で読む（全部の光を使う、符号付き）/
+                            #   fabs: 出力面の明るさの模様をフーリエ変換した振幅 |FT(I)|(k_c) を読む（場の自己相関、位置不変）
+    readout_k0: int = 1     # 読む周波数 k_c = k0 + c·dk
+    readout_dk: int = 1
+    pat_w: str = ""         # 照明パターンの平均の重み（逆拡散の重み付け）。"" 均等 / adj: 隣のスロットどうしの干渉だけ残す /
+                            #   learn: 重みを学習する（パターン数個、非負）。tilt 照明と組み合わせる
+    pat_a: float = 0.5      # adj のとき、隣どうしの干渉を残す割合（0〜0.5）
     pre_layers: int = 0     # >0: 背景光 → 前 Sin レイヤ（前処理光）→ 入力 → 後 Sin レイヤ。前段の層数
     pre_P: int = 64         # 前段レイヤの区画数
     pre_A0: float = 1.0     # 前段レイヤの振幅の初期倍率（小さくすると「照明そのまま」から学習が始まる）
@@ -213,6 +221,17 @@ class SinWave(nn.Module):
                 layer = SinLayer(1, "phase", L, "pre", g, cfg.pre_P)
                 layer.A.data *= cfg.pre_A0
                 self.pre.append(layer)
+        if cfg.incoh > 0 and cfg.pat_w:
+            n = cfg.incoh
+            j = torch.arange(n, dtype=torch.float32)
+            if cfg.pat_w == "adj":
+                # tilt 照明で重み w_j = 1 + 2a·cos(2πj/n) とすると、スロット間の相関は
+                # K(Δ) = Σ_j w_j e^{i2πjΔ/n} / Σ w_j → Δ=0 で 1、|Δ|=1 で a、それ以外 0（隣どうしだけ干渉が残る）
+                self.register_buffer("pw", (1 + 2 * cfg.pat_a * torch.cos(2 * math.pi * j / n)))
+            elif cfg.pat_w == "learn":
+                self.pw_logit = nn.Parameter(torch.zeros(n))
+            else:
+                raise ValueError(cfg.pat_w)
         if cfg.feedback:
             self.fb_beta = nn.Parameter(torch.tensor(cfg.fb))
         self.bias = nn.Parameter(torch.zeros(cfg.C), requires_grad=cfg.bias)
@@ -324,7 +343,12 @@ class SinWave(nn.Module):
             u = torch.fft.ifft(torch.fft.fft(u) * self.H_out[None], dim=-1)
         if self.cfg.far:
             u = torch.fft.fftshift(torch.fft.fft(u, norm="ortho"), dim=-1)  # 集光レンズ
-        inten = (u.abs() ** 2).sum(2).mean(1)              # 波長は非干渉に足し、時間は平均 (B, L)
+        inten = (u.abs() ** 2).sum(2)                      # 波長は非干渉に足す (B, T, L)
+        if self.cfg.incoh > 0 and self.cfg.pat_w:          # 照明パターンの重み付き平均（逆拡散の重み付け）
+            w = self.pw if self.cfg.pat_w == "adj" else torch.nn.functional.softplus(self.pw_logit) + 1e-3
+            inten = (inten * (w / w.sum())[None, :, None]).sum(1)
+        else:
+            inten = inten.mean(1)                          # 時間（照明パターン）は平均 (B, L)
         return inten / (inten.mean(-1, keepdim=True) + 1e-12)
 
     def preprocess(self, u):
@@ -362,6 +386,12 @@ class SinWave(nn.Module):
         return v[0]
 
     def detect(self, inten):
+        if self.cfg.readout != "win":
+            C = self.det.shape[0]
+            ks = torch.arange(C, device=inten.device) * self.cfg.readout_dk + self.cfg.readout_k0
+            spec = torch.fft.rfft(inten, dim=-1)[:, ks] / inten.shape[-1]      # 平均強度 1 で正規化済み
+            f = spec.real * 2 if self.cfg.readout == "fcos" else spec.abs() * 2
+            return self.gain * f + self.bias
         f = inten @ self.det.T / self.cfg.det_width
         if self.cfg.diff:
             fp, fm = f[:, 0::2], f[:, 1::2]
