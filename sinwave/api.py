@@ -120,14 +120,20 @@ class SinWaveClassifier:
     def save(self, path):
         torch.save(dict(classes=self.classes, slots=self.slots, n_slots=self.n_slots, name=self.name,
                         seed=self.seed, freeze_w=self.freeze_w, preset=self.preset, opts=self.opts,
-                        state=self.model.state_dict()), path)
+                        state=self._learned_state()), path)
+
+    def _learned_state(self):
+        # 学習した値（A, ω, φ, 温度, 背景光）だけを保存する。伝搬・検出器などの固定部品は設定から作り直せる
+        keep = ("A", "w", "phi", "gain", "bias")
+        return {k: v for k, v in self.model.state_dict().items() if k.split(".")[-1] in keep}
 
     @classmethod
     def load(cls, path, device=None):
         d = torch.load(path, map_location="cpu", weights_only=False)
         obj = cls(d["classes"], d["slots"], d["n_slots"], d["preset"], d["name"], d["seed"], device,
                   d["freeze_w"], **d["opts"])
-        obj.model.load_state_dict(d["state"])
+        missing, unexpected = obj.model.load_state_dict(d["state"], strict=False)
+        assert not unexpected and all(k.split(".")[-1] not in ("A", "w", "phi", "gain", "bias") for k in missing)
         return obj
 
     def n_params(self):

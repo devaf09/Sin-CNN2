@@ -104,6 +104,7 @@ if __name__ == "__main__":
     ap.add_argument("--pre", type=int, default=0)
     ap.add_argument("--freeze_w", action="store_true")
     ap.add_argument("--calib", action="store_true")
+    ap.add_argument("--dw", type=int, default=4, help="検出窓の幅")
     ap.add_argument("--blur", default="")
     ap.add_argument("--input_ft", action="store_true")
     ap.add_argument("--blur_mix", action="store_true")
@@ -118,7 +119,7 @@ if __name__ == "__main__":
         res[f"ngram{o}"] = (round(acc, 4), round(ce, 3))
     print(json.dumps(res, ensure_ascii=False), flush=True)
 
-    cfg = Config(L=a.L, M=a.M, C=a.V, far=True, bias=a.bias, incoh=a.incoh, slot=a.S, illum=a.illum, detlog=a.detlog, pre_layers=a.pre, blur=a.blur, blur_mix=a.blur_mix, input_ft=a.input_ft)
+    cfg = Config(L=a.L, M=a.M, C=a.V, far=True, bias=a.bias, incoh=a.incoh, slot=a.S, illum=a.illum, detlog=a.detlog, pre_layers=a.pre, blur=a.blur, blur_mix=a.blur_mix, det_width=a.dw, input_ft=a.input_ft)
     enc = lambda xs: encode(xs, cfg.L, cfg.M, DEV, a.S, "freq", not a.norepeat)
     X, Y = enc([x for x, _, _ in tr]), torch.tensor([y for _, y, _ in tr], device=DEV)
     Xt, Yt = enc([x for x, _, _ in te]), torch.tensor([y for _, y, _ in te], device=DEV)
