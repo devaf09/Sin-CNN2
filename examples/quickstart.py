@@ -2,6 +2,11 @@
 
     python examples/quickstart.py            (GPU があれば GPU、なければ CPU。CPU では数分かかる)
 """
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # リポジトリ直下の sinwave を使う
+
 from sinwave import SinWaveClassifier, merge
 from sinwave.tasks import task_skills
 

@@ -5,6 +5,11 @@
 比較: n-gram（後退あり）。
 並列学習: 訓練文書を 2 つに分けて別光路で学習 → 融合。全訓練文書で 1 光路を学習したものと比べる。
 """
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # リポジトリ直下の sinwave を使う
+
 import argparse
 import json
 import math

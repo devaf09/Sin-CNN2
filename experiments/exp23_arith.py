@@ -15,6 +15,11 @@
   acc_bg  : バナナ・ブドウの正答率（4 択）
   acc4    : 4 種すべての正答率（4 択）
 """
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # リポジトリ直下の sinwave を使う
+
 import argparse
 import copy
 import json

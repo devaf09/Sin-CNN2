@@ -14,6 +14,11 @@ T2(文字頻度) の 8 クラスを A(0-3) と B(4-7) の二つの「技能」�
   S5 重ね融合: 同じ位置のレイヤ同士の位相を足し合わせる（重ね合わせ融合）
   S6 同時    : A と B を最初から一緒に学習（上限の目安）
 """
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # リポジトリ直下の sinwave を使う
+
 import argparse
 import copy
 import json

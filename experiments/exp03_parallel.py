@@ -6,6 +6,11 @@ P2 並列光路＋背景抑制     : さらに共通のランダム文字列（�
 C1 直列追加＋データなし保持: A を凍結して B 層を足すとき、ランダム文字列に対する A の出力を保つ
 各光路は相手のデータを一切見ない。
 """
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # リポジトリ直下の sinwave を使う
+
 import argparse
 import copy
 import json

@@ -1,4 +1,9 @@
 """比較相手: 文字頻度 (unigram) と巡回バイグラムのロジスティック回帰。"""
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # リポジトリ直下の sinwave を使う
+
 import sys
 
 import torch

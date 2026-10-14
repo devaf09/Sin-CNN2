@@ -1,4 +1,9 @@
 """実験04: 実験02/03 の主要シナリオを複数 seed で測り直す。"""
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # リポジトリ直下の sinwave を使う
+
 import argparse
 import copy
 import json

@@ -3,6 +3,11 @@
 n 技能 × 4 クラス。各技能は自分のデータだけで自分の光路を学習し、最後に強度を足して融合する。
 比較: 1 光路で全技能を同時学習（パラメータ数は融合後と同じ D·n 層）、ユニグラム回帰（全クラス同時）。
 """
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # リポジトリ直下の sinwave を使う
+
 import argparse
 import json
 

@@ -1,4 +1,9 @@
 """実験01: そもそも学習できるか。T1(暗記) / T2(文字頻度) / T3(順序) を設定を変えて試す。"""
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # リポジトリ直下の sinwave を使う
+
 import argparse
 import json
 import time

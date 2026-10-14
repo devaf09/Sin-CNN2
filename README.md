@@ -6,6 +6,8 @@
 いちばんの特徴は、**別々に学習した「技能」を、強度を足すだけで融合でき、外せば完全に元に戻る**ことです。
 
 > 物理実装は考えていません（計算機上の数値実験です）。光学の言葉を使っていますが、すべて PyTorch で計算しています。
+>
+> 波や機械学習になじみがない方は、先に [docs/introduction.md](docs/introduction.md)（前提知識なしの解説）をどうぞ。
 
 ## 一目でわかる SinWave
 
@@ -23,6 +25,7 @@
 - **技能が増えるほど融合後の判別が落ちる。** 4 技能で、全部を同時に学習した場合より約 4 ポイント低い。
 - **計算は軽くない。** パラメータは少ないが、推論のたびに長さ 2048 の FFT をレイヤの数だけ行う。照明を使う設定ではさらに 8 倍。
 - **入力の符号化に精度が縛られる。** 文字を角速度で表すので、区別できる文字の種類は周波数の数（S）で決まる。
+- **長い文字列は先頭しか使われない。** 1 文字に S 標本を使うので、使われるのは先頭 L/S 文字（既定で 8 文字、漢字向けの設定では 2 文字）。超えた部分は無視される（警告が出る）。今のところ「短い文字列の分類」向け。
 
 ### 向いている使い方
 - 技能やクラスを**後から足したり外したりする**必要がある場面（利用者ごとの語彙、期間限定の分類、削除要求に正確に応える必要がある場合など）
@@ -162,17 +165,26 @@ a = SinWaveClassifier.load("skill_A.pt")
 
 ## ファイル
 
-| パス | 内容 |
-|---|---|
-| `sinwave/model.py` | モデル本体（符号化、Sin レイヤ、伝搬、照明、滲み層、検出器、並列光路） |
-| `sinwave/api.py` | 高水準 API（`SinWaveClassifier`, `merge`, `combine`） |
-| `sinwave/tasks.py` | 合成課題 |
-| `exp01`〜`exp06_*.py`, `sweep*.sh` | 実験スクリプト（実験 01〜22） |
-| `baseline.py` | 比較用のロジスティック回帰 |
-| `results/` | 実験の生の出力 |
-| `NOTES.md` | すべての実験の記録（効かなかったものも含む） |
-| `tools/fetch_cc100_sample.py`, `tools/prepare_corpus.py` | 実テキスト用のコーパス取得・整形 |
-| `tools/zeta_zeros.py` | リーマンゼータのゼロ点の計算（ω の初期配置の実験用、mpmath） |
+```
+sinwave/            ライブラリ本体
+  api.py              高水準 API（SinWaveClassifier, merge, combine）← まずはここ
+  model.py            光学モデル（符号化、Sin レイヤ、回折、照明、滲み層、検出器、並列光路）
+  tasks.py            合成課題
+  zeta_zeros.txt      リーマンゼータのゼロ点（ω の初期配置の実験用）
+examples/quickstart.py  使い方の例
+tests/test_api.py       テスト
+docs/introduction.md    前提知識がない人向けの解説
+experiments/          実験スクリプト（実験 01〜27）。リポジトリ直下で実行する
+  exp01_learnability.py   1 光路の学習（多くの実験はこれのオプション違い）
+  exp02〜05               追加・取消・融合・並列光路
+  exp06_nextchar.py       実テキストの次文字予測
+  exp23_arith.py          光路の足し算・引き算
+  baseline.py             比較用のロジスティック回帰
+  sweeps/                 各実験の条件をまとめたシェルスクリプト（sweepNN.sh = 実験 NN）
+results/              実験の生の出力
+NOTES.md              すべての実験の記録（効かなかったものも含む）
+tools/                コーパス取得・整形（CC-100）、ゼータのゼロ点の計算
+```
 
 ## 実テキストの実験について
 
@@ -180,7 +192,7 @@ a = SinWaveClassifier.load("skill_A.pt")
 
 ```bash
 python tools/fetch_cc100_sample.py data/cc100_ja.txt --chars 600000
-python exp06_nextchar.py --bias --n 2 --M 1 --S 1024 --L 2048
+python experiments/exp06_nextchar.py --bias --n 2 --M 1 --S 1024 --L 2048 --freeze_w
 ```
 
 ## 動作環境
