@@ -1,26 +1,24 @@
-"""正弦の干渉・回折による学習器 (SinWave)。
+"""正弦の干渉・回折による学習器 (SinWave) の本体。
 
-構成
-----
-- 入力: 文字列をレイヤ長 L まで繰り返し、各文字を固定の位相 θ(c) に変換した複素場 u0[t] = exp(jθ(c_t))。
-  θ は文字コードのハッシュで決まり、学習しない（「字形」に相当する固定の符号化）。
-  M 波長（色）を使う場合は波長ごとに独立なハッシュで位相を作る。
-- レイヤ: 各レイヤは (振幅 A, 角速度 ω, 初期位相 φ) だけを持つ。位置 t を時間とみなし
-      phase 型: u ← u · exp(j · A·sin(ωt+φ) · λ0/λ)     (位相変調 = 乗算)
-      amp   型: u ← u · (1 + A·sin(ωt+φ))              (振幅変調 = 乗算)
-      add   型: u ← u + A · exp(j(ωt+φ))                (参照波の注入 = 加算)
-  1レイヤに K 個の正弦を持たせることもできる（既定 K=1）。重み行列は持たない。
-- 伝搬: レイヤ間は角スペクトル法による自由空間伝搬（周期境界、固定。学習しない）。
-- 出力: 出力面の C 個の窓（検出器）に集まった強度 |u|^2 を特徴とし、正規化して logit にする。
+光（複素数の場 u）が「Sin レイヤ → 回折」を繰り返し、出力面の明るさで判定する。重み行列は持たない。
 
-学習・追加・取消・融合
---------------------
-レイヤは「ユニット」の列。ユニットには task タグを付けられ、凍結/削除/結合が自由にできる。
+    文字列 ─ encode ─▶ 照明 ─▶ 滲み層 ─▶ [Sin レイヤ ─▶ 回折] × D ─▶ レンズ ─▶ 検出器 ─▶ logit
+
+- encode   : 1 文字 = S 標本。freq 符号化では文字コード mod S を角速度にした搬送波 exp(j(2πk·s/S + θ))。
+             文字列はレイヤ長 L まで繰り返す（L/S 文字を超える部分は使われない）。
+- 照明     : (incoh>0) 照明パターンを incoh 通り用意し、明るさを平均する。異なる位置の文字どうしの干渉を打ち消す。
+- 滲み層   : (blur="mean") 前後の文字との平均。周波数領域では櫛形フィルタで、位置の雑音を弱める。
+- Sin レイヤ: u ← u · exp(j · A sin(ωt + φ))。レイヤを P 区画に分け、区画ごとに (A, ω, φ) を持つ。学習するのはここだけ。
+- 回折     : 角スペクトル法による自由空間伝搬（距離 z、周期境界）。
+- レンズ   : (far=True) フーリエ変換して遠方場で検出する。
+- 検出器   : 出力面の C 個の窓の明るさ → logit（温度 gain と、任意で背景光 bias）。
+
+Config には実験で試した多くのオプションがある（効かなかったものも含む）。良かった組み合わせは sinwave/api.py の PRESETS。
 """
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -57,22 +55,42 @@ def char_wave(c: str, m: int, S: int, enc: str) -> list[float]:
     raise ValueError(enc)
 
 
+def encode_ids(texts: list[str], L: int, S: int):
+    """文字列を「文字番号の表」にする。戻り値 (chars, ids)。ids: (B, ceil(L/S)) の LongTensor。
+    文字列はレイヤ長まで繰り返し、L/S 文字を超える部分は使わない。"""
+    if any(len(s) == 0 for s in texts):
+        raise ValueError("空の文字列は符号化できない")
+    chars = sorted(set("".join(texts)))
+    cid = {c: i for i, c in enumerate(chars)}
+    n_chars = -(-L // S)
+    ids = torch.tensor([[cid[c] for c in (s * (n_chars // len(s) + 1))[:n_chars]] for s in texts])
+    return chars, ids
+
+
+def char_table(chars: list[str], M: int, S: int, enc: str, device) -> torch.Tensor:
+    """各文字の S 標本の複素波形 (V, M, S)。"""
+    table = torch.tensor([[char_wave(c, m, S, enc) for m in range(M)] for c in chars])
+    return torch.polar(torch.ones_like(table), table).to(device)
+
+
+def field_from_ids(ids: torch.Tensor, tab: torch.Tensor, L: int, lens: torch.Tensor | None = None) -> torch.Tensor:
+    """文字番号の表と文字の波形から場 (B, M, L) を作る。lens を渡すと各文字列の長さ以降を暗く (0) する。"""
+    w = tab[ids.to(tab.device)]                                   # (B, n_chars, M, S)
+    out = w.permute(0, 2, 1, 3).reshape(w.shape[0], w.shape[2], -1)[..., :L]
+    if lens is not None:
+        out = out * (torch.arange(L, device=out.device)[None] < lens.to(out.device)[:, None])[:, None]
+    return out
+
+
 def encode(texts: list[str], L: int, M: int, device, S: int = 1, enc: str = "phase", repeat: bool = True) -> torch.Tensor:
     """文字列を位相場にする（1文字 = S 標本）。repeat=True なら長さ L まで繰り返し、
     False なら先頭に1回だけ置いて残りは暗く（0）する。戻り値 (B, M, L) complex64。"""
-    chars = sorted(set("".join(texts)))
-    cid = {c: i for i, c in enumerate(chars)}
-    table = torch.tensor([[char_wave(c, m, S, enc) for m in range(M)] for c in chars])  # (V, M, S)
-    n_chars = -(-L // S)
-    ids = torch.tensor([[cid[c] for c in (s * (n_chars // len(s) + 1))[:n_chars]] for s in texts])
+    chars, ids = encode_ids(texts, L, S)
+    tab = char_table(chars, M, S, enc, device)
+    lens = None if repeat else torch.tensor([min(len(s) * S, L) for s in texts])
     out = torch.empty(len(texts), M, L, dtype=torch.complex64, device=device)
-    tab = torch.polar(torch.ones_like(table), table).to(device)
     for i in range(0, len(texts), 4096):
-        w = tab[ids[i:i + 4096].to(device)]                 # (b, n_chars, M, S)
-        out[i:i + 4096] = w.permute(0, 2, 1, 3).reshape(w.shape[0], M, -1)[..., :L]
-    if not repeat:
-        lens = torch.tensor([min(len(s) * S, L) for s in texts], device=device)
-        out = out * (torch.arange(L, device=device)[None] < lens[:, None])[:, None]
+        out[i:i + 4096] = field_from_ids(ids[i:i + 4096], tab, L, None if lens is None else lens[i:i + 4096])
     return out
 
 
@@ -156,10 +174,10 @@ class Config:
     pre_layers: int = 0     # >0: 背景光 → 前 Sin レイヤ（前処理光）→ 入力 → 後 Sin レイヤ。前段の層数
     pre_P: int = 64         # 前段レイヤの区画数
     pre_A0: float = 1.0     # 前段レイヤの振幅の初期倍率（小さくすると「照明そのまま」から学習が始まる）
-    blur: str = ""          # 滲み層（入力と最初のレイヤの間）。std: 前後 r 文字とのばらつき（標準偏差）を場にする /
-                            #   ustd: 元の場 × ばらつき / mean: 前後 r 文字の平均（対照）
-    blur_r: int = 1         # 滲み層の半径（文字数）
+    blur: str = ""          # 滲み層（入力と最初のレイヤの間）。mean: 前後 r 文字の平均（効く）/
+                            #   std: 前後 r 文字とのばらつき（標準偏差）/ ustd: 元の場 × ばらつき /
                             #   cstd: 前の r 文字と自分だけのばらつき（因果的）/ diff: 直前の文字との差 u_n − u_{n−1}
+    blur_r: int = 1         # 滲み層の半径（文字数）
     blur_mix: bool = False  # True: 色0 に元の入力、色1 に滲みを載せる（M≥2 が必要。色どうしは強度で足される）
     input_ft: bool = False  # True: 入力（文字列の波形）をフーリエ変換してからレイヤへ渡す
     lens_every: int = 0     # >0: その層数ごとに固定レンズ（フーリエ変換）を挟み、実空間と周波数空間を交互にする
@@ -236,11 +254,10 @@ class SinWave(nn.Module):
             self.fb_beta = nn.Parameter(torch.tensor(cfg.fb))
         self.bias = nn.Parameter(torch.zeros(cfg.C), requires_grad=cfg.bias)
 
-    # 検出器：出力面に C 個の窓を等間隔に置く
-    def set_detectors(self, C: int, offset: int = 0, n_total: int | None = None):
-        n_total = n_total or C
+    def set_detectors(self, C: int):
+        """出力面に C 個の窓（幅 det_width）を等間隔に置く。"""
         L, w = self.L_out, self.cfg.det_width
-        centers = [int((i + 0.5) * L / n_total) for i in range(offset, offset + C)]
+        centers = [int((i + 0.5) * L / C) for i in range(C)]
         mask = torch.zeros(C, L)
         for i, c in enumerate(centers):
             mask[i, (torch.arange(w) + c - w // 2) % L] = 1.0
@@ -409,7 +426,8 @@ class SinWave(nn.Module):
 
 class Parallel(nn.Module):
     """互いに干渉しない光路（色・偏光などを想定）を並べ、検出器で強度を足す。
-    融合 = 光路を足す、取消 = 光路を外す。各光路は独立に学習できる。"""
+    融合 = 光路を足す、取消 = 光路を外す。各光路は独立に学習できる。
+    mode="gate" を使うときは、各光路に担当する検出器の番号の列 own を持たせておく（例: path.own = [0, 1, 2, 3]）。"""
 
     def __init__(self, paths: list[SinWave]):
         super().__init__()
@@ -428,6 +446,8 @@ class Parallel(nn.Module):
             for p in paths:
                 inten = p.intensity(u0)
                 f = inten @ p.det.T / p.cfg.det_width                # (B, C) 各検出器の強度
+                if not hasattr(p, "own"):
+                    raise ValueError("gate には各光路の担当検出器 own が必要（path.own = [...]）")
                 own = torch.tensor(p.own, device=u0.device)
                 r = f[:, own].sum(1) / (f.sum(1) + 1e-9)
                 lg = p.detect(inten)[:, own]

@@ -1,6 +1,12 @@
 """高水準 API の動作確認（CPU、小さな設定で数十秒）。  python -m pytest tests -q  または  python tests/test_api.py"""
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # リポジトリ直下の sinwave を使う
+
 import os
 import tempfile
+import warnings
 
 import torch
 
@@ -8,6 +14,7 @@ from sinwave import SinWaveClassifier, merge
 from sinwave.tasks import task_skills
 
 SMALL = dict(L=512, S=128, D=4, P=16)
+warnings.filterwarnings("ignore", message=".*文字を超えている")   # 小さな設定では 4 文字で切れる（意図どおり）
 
 
 def _skill(i, sk, seed=0):
@@ -55,7 +62,29 @@ def test_combine():
     assert ab.n_params() == a.n_params()               # 1 本の光路のまま
 
 
+def test_checks_and_reproducibility():
+    sk = task_skills(1, n_train=100, n_test=50)
+    (x, y), _ = sk[0]
+    mk = lambda: SinWaveClassifier([0, 1, 2, 3], n_slots=8, device="cpu", seed=3, **SMALL)
+    a, b = mk().fit(x, y, steps=30), mk().fit(x, y, steps=30)
+    assert torch.equal(a.logits(x[:5]), b.logits(x[:5]))          # 同じ seed なら同じ結果
+    for bad in (lambda: SinWaveClassifier([0, 0]), lambda: SinWaveClassifier([0, 1], slots=[0, 0]),
+                lambda: mk().fit(x, [9] * len(x)), lambda: mk().fit(["", "あ"], [0, 1]),
+                lambda: merge([a, b]), lambda: merge([a]).remove("x")):
+        try:
+            bad()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("ValueError になるはず")
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        a.logits(["あ" * (a.max_chars + 1)])
+        assert any("超えている" in str(m.message) for m in w)
+
+
 if __name__ == "__main__":
     test_fit_merge_remove_save()
     test_combine()
+    test_checks_and_reproducibility()
     print("ok")
