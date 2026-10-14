@@ -136,6 +136,19 @@ class SinWaveClassifier:
         assert not unexpected and all(k.split(".")[-1] not in ("A", "w", "phi", "gain", "bias") for k in missing)
         return obj
 
+    def derive(self, classes, slots=None, name=None):
+        """この技能を「共通の出発点」として、新しい技能を作る（パラメータを引き継ぐ。あとで fit する）。
+        同じ出発点から作った技能どうしは combine で足し引きできる。"""
+        import copy
+        new = copy.copy(self)
+        new.classes = list(classes)
+        new.slots = list(slots) if slots is not None else list(range(len(new.classes)))
+        assert max(new.slots) < self.n_slots
+        new.name = name or "+".join(map(str, new.classes))
+        new.model = copy.deepcopy(self.model)
+        new.base = self
+        return new
+
     def n_params(self):
         """学習するパラメータ数（レイヤの A, ω, φ ＋ 温度 1 ＋ 背景光 n_slots）。"""
         return sum(p.numel() for p in self.model.parameters() if p.requires_grad)
@@ -222,3 +235,29 @@ class MergedClassifier:
 def merge(skills, mode="avg"):
     """技能を融合する。各技能は互いのデータを見ずに学習してよい。"""
     return MergedClassifier(skills, mode)
+
+
+def combine(base, terms, classes=None, slots=None, name=None):
+    """タスク算術: base + Σ 係数 × (技能 − base) を 1 本の光路として作る。
+    terms: [(係数, 技能), ...]。技能は base.derive(...) から学習したもの。
+    係数 +1 で技能を足す（1 本の光路での融合、計算は増えない）、負の係数で「その技能に似た入力への反応」を弱める。
+    classes / slots を省略すると、係数が正の技能のクラスをまとめる。"""
+    import copy
+    for _, sk in terms:
+        assert getattr(sk, "base", None) is base, "同じ base から derive した技能だけを足し引きできる"
+    out = copy.copy(base)
+    out.model = copy.deepcopy(base.model)
+    if classes is None:
+        pos = [sk for c, sk in terms if c > 0]
+        classes = [c for sk in pos for c in sk.classes]
+        slots = [sl for sk in pos for sl in sk.slots]
+    out.classes, out.slots = list(classes), list(slots if slots is not None else range(len(classes)))
+    out.name = name or "combine(" + ", ".join(f"{c:+g}·{sk.name}" for c, sk in terms) + ")"
+    keep = ("A", "w", "phi", "gain", "bias")
+    b0 = base.model.state_dict()
+    new = {}
+    for k, v in b0.items():
+        if k.split(".")[-1] in keep:
+            new[k] = v + sum(c * (sk.model.state_dict()[k] - v) for c, sk in terms)
+    out.model.load_state_dict(new, strict=False)
+    return out

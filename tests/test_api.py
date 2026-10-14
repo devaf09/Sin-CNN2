@@ -38,6 +38,24 @@ def test_fit_merge_remove_save():
     assert merge([a, b], mode="gate").predict(xa[:3])
 
 
+def test_combine():
+    from sinwave import combine
+    torch.manual_seed(0)
+    sk = task_skills(2, n_train=200, n_test=100)
+    (x0, y0), _ = sk[0]
+    (x1, y1), (x1t, y1t) = sk[1]
+    base = SinWaveClassifier([0, 1], slots=[0, 1], n_slots=8, device="cpu", **SMALL)
+    base.fit([x for x, y in zip(x0, y0) if y < 2], [y for y in y0 if y < 2], steps=100)
+    a = base.derive([0, 1, 2, 3], slots=[0, 1, 2, 3], name="a").fit(x0, y0, steps=100)
+    b = base.derive([4, 5, 6, 7], slots=[4, 5, 6, 7], name="b").fit(x1, y1, steps=100)
+    ab = combine(base, [(1, a), (1, b)])
+    assert ab.classes == a.classes + b.classes
+    same = combine(base, [(1, a)])                     # 係数 1 の 1 項なら a と同じ
+    assert torch.allclose(same.logits(x1t[:5]), a.logits(x1t[:5]), atol=1e-4)
+    assert ab.n_params() == a.n_params()               # 1 本の光路のまま
+
+
 if __name__ == "__main__":
     test_fit_merge_remove_save()
+    test_combine()
     print("ok")
