@@ -17,6 +17,7 @@ test = ["pytest"]
 
 [tool.setuptools]
 packages = ["sinwave"]
+py-modules = ["sinwave_minimal"]
 
 [tool.setuptools.package-data]
 sinwave = ["zeta_zeros.txt"]

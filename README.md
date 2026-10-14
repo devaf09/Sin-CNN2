@@ -9,6 +9,38 @@
 >
 > 波や機械学習になじみがない方は、先に [docs/introduction.md](docs/introduction.md)（前提知識なしの解説）をどうぞ。
 
+## 最小版: `sinwave_minimal.py`（まずはこれ）
+
+これまでの実験で分かっている**最も効率の良い構成だけ**を、PyTorch だけで動く **1 ファイル**にまとめたものです。実験用のオプションは入っていません。コメントを多めにしてあるので、ほかのプロジェクトにコピーして改造しやすい形です。成果が出たら、このファイルをバージョンアップしていきます（ファイル先頭に変更履歴）。
+
+```python
+import sinwave_minimal as sw
+
+# 検出器 8 個のうち、技能 A は 0〜3 番、技能 B は 4〜7 番を担当する。ラベルは検出器の番号
+a = sw.train(sw.SinWaveNet(n_slots=8, own=[0, 1, 2, 3], patterns=8), texts_a, labels_a)
+b = sw.train(sw.SinWaveNet(n_slots=8, own=[4, 5, 6, 7], patterns=8), texts_b, labels_b)
+
+sw.predict(a, ["こんにちは"])     # → [検出器の番号]
+m = sw.merge([a, b])              # 融合: 別々に学習した技能を足すだけ
+m = sw.merge([a])                 # 取消: 外せば A 単独と完全に同じ
+sw.save(a, "a.pt"); a = sw.load("a.pt")   # 1 技能 約 10KB
+
+# 光路の足し算・引き算（共通の出発点 base から derive した技能どうし）
+apple = sw.train(sw.derive(base, own=[0, 2, 3]), texts_apple, labels_apple)
+both = sw.combine(base, [(1, apple), (1, tomato)])              # 1 本の光路で融合
+careful = sw.combine(base, [(1, apple), (-1.5, tomato)], own=[0, 2, 3])   # トマトへの誤反応を減らす
+```
+
+| バージョン | 構成 | 技能単独 | 2 技能の融合 |
+|---|---|---|---|
+| 1.0.0 | 文字=角速度の符号化、平均の滲み層、区画ごとの Sin レイヤ（ω 固定）、遠方場、背景光、tilt 照明 8 通り (`patterns=8`) | 97.0 ± 0.3 | 93.1 ± 0.2 |
+| 1.0.0 | 同、照明なし (`patterns=0`、計算 1/8) | 94.6 ± 1.3 | 86.9 ± 1.1 |
+
+2 技能 × 4 クラスの合成課題、3 seed の平均±標準誤差（`python experiments/bench_minimal.py`）。動作例は `python sinwave_minimal.py`。
+実験で使ってきた本体（`sinwave/model.py`）と同じ出力になることを `tests/test_minimal.py` で確認しています。
+
+`sinwave/` パッケージ（`SinWaveClassifier` など）は、任意のラベル名・設定の切り替え・実験用の全オプションを持つ版です。
+
 ## 一目でわかる SinWave
 
 ### 長所
@@ -166,13 +198,14 @@ a = SinWaveClassifier.load("skill_A.pt")
 ## ファイル
 
 ```
-sinwave/            ライブラリ本体
-  api.py              高水準 API（SinWaveClassifier, merge, combine）← まずはここ
+sinwave_minimal.py  最小版（1 ファイル、PyTorch のみ）← まずはここ
+sinwave/            ライブラリ本体（全オプション版）
+  api.py              高水準 API（SinWaveClassifier, merge, combine）
   model.py            光学モデル（符号化、Sin レイヤ、回折、照明、滲み層、検出器、並列光路）
   tasks.py            合成課題
   zeta_zeros.txt      リーマンゼータのゼロ点（ω の初期配置の実験用）
 examples/quickstart.py  使い方の例
-tests/test_api.py       テスト
+tests/                  テスト（test_minimal.py は最小版と本体の出力の一致も確認）
 docs/introduction.md    前提知識がない人向けの解説
 experiments/          実験スクリプト（実験 01〜27）。リポジトリ直下で実行する
   exp01_learnability.py   1 光路の学習（多くの実験はこれのオプション違い）
@@ -180,6 +213,7 @@ experiments/          実験スクリプト（実験 01〜27）。リポジト�
   exp06_nextchar.py       実テキストの次文字予測
   exp23_arith.py          光路の足し算・引き算
   baseline.py             比較用のロジスティック回帰
+  bench_minimal.py        最小版の性能確認
   sweeps/                 各実験の条件をまとめたシェルスクリプト（sweepNN.sh = 実験 NN）
 results/              実験の生の出力
 NOTES.md              すべての実験の記録（効かなかったものも含む）
