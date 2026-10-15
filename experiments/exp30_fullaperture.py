@@ -130,6 +130,7 @@ if __name__ == "__main__":
     ap.add_argument("--steps", type=int, default=0, help="0 なら課題ごとの既定（合成 1500、実テキスト 3000）")
     ap.add_argument("--nl", default="")
     ap.add_argument("--freeze_w", action="store_true")
+    ap.add_argument("--focus", action="store_true", help="レイヤごとに学習できる焦点の強さを足す")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max_train", type=int, default=0, help="動作確認用に訓練例を減らす")
     a = ap.parse_args()
@@ -145,7 +146,7 @@ if __name__ == "__main__":
     Ttr, Tte = enc.table(xtr), enc.table(xte)
     Ytr, Yte = torch.tensor(ytr), torch.tensor(yte)
 
-    cfg = Config(L=a.L, C=C, far=True, bias=is_text, nl=a.nl)
+    cfg = Config(L=a.L, C=C, far=True, bias=is_text, nl=a.nl, focus=a.focus)
     model = SinWave(cfg).to(dev)
     model.add_layers(a.D, 1, "phase", seed=a.seed, P=a.P)
     model.bias.requires_grad_(is_text)

@@ -168,6 +168,7 @@ class Config:
                             #   （閾値の増幅曲線。光学では可飽和吸収体。しきい値はレイヤごとに学習）
     nl_theta: float = 0.5   # しきい値の初期値（平均の明るさ = 1 に対する比）
     nl_tau: float = 0.25    # 曲線のなめらかさ
+    focus: bool = False     # True: 各レイヤに学習できる「焦点の強さ」κ を 1 つ足す（二次の位相 π·κ·(x−L/2)²/L、初期値 0。レンズの度に相当）
     readout: str = "win"    # 検出の方法。win: 集光点の窓の明るさ /
                             #   fcos: 出力面全体を縞模様 cos(2π k_c x / L) の感度で読む（全部の光を使う、符号付き）/
                             #   fabs: 出力面の明るさの模様をフーリエ変換した振幅 |FT(I)|(k_c) を読む（場の自己相関、位置不変）
@@ -276,6 +277,8 @@ class SinWave(nn.Module):
                 layer.logz = nn.Parameter(torch.tensor(math.log(self.cfg.z), device=self.t.device))
             if self.cfg.nl == "thresh":
                 layer.theta = nn.Parameter(torch.tensor(float(self.cfg.nl_theta), device=self.t.device))
+            if self.cfg.focus:
+                layer.kappa = nn.Parameter(torch.tensor(0.0, device=self.t.device))
             self.layers.append(layer)
 
     def init_w(self, kind: str, tag: str | None = None):
@@ -335,7 +338,12 @@ class SinWave(nn.Module):
         for d, layer in enumerate(self.layers):
             if active is not None and layer.tag not in active:
                 continue
-            u = self.propagate(layer(u, self.tt, self.lam_ratio), self.layer_H(d, layer))
+            u = layer(u, self.tt, self.lam_ratio)
+            if self.cfg.focus:   # 焦点の強さ: 二次の位相（レンズの度）。正弦の区画だけでは作りにくい「ピント合わせ」
+                L = self.cfg.L
+                q = math.pi * layer.kappa * (self.t - L / 2) ** 2 / L
+                u = u * torch.polar(torch.ones_like(q), q)
+            u = self.propagate(u, self.layer_H(d, layer))
             if self.cfg.lens_every and (d + 1) % self.cfg.lens_every == 0:
                 u = torch.fft.fftshift(torch.fft.fft(u, norm="ortho"), dim=-1)
             # 増幅: レイヤを通るたびに平均強度を 1 に戻す（減衰・発散で値が潰れないように。位相の情報は変えない）
