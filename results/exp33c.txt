@@ -1,0 +1,11 @@
+{"part": "phrase", "enc": "atom", "pairs": 16, "rule": "reverse", "L": 4096, "D": 16, "P": 64, "steps": 3000, "seed": 0, "char_acc": 1.0, "string_acc": 1.0, "params": 3072, "bits_stored": 256, "sec": 56.7}
+{"part": "phrase", "enc": "pair", "pairs": 16, "rule": "reverse", "L": 4096, "D": 16, "P": 64, "steps": 3000, "seed": 0, "char_acc": 1.0, "string_acc": 1.0, "params": 3072, "bits_stored": 256, "sec": 56.1}
+{"part": "phrase", "enc": "atom", "pairs": 64, "rule": "reverse", "L": 4096, "D": 16, "P": 64, "steps": 3000, "seed": 0, "char_acc": 1.0, "string_acc": 1.0, "params": 3072, "bits_stored": 1024, "sec": 55.6}
+{"part": "phrase", "enc": "pair", "pairs": 64, "rule": "reverse", "L": 4096, "D": 16, "P": 64, "steps": 3000, "seed": 0, "char_acc": 1.0, "string_acc": 1.0, "params": 3072, "bits_stored": 1024, "sec": 55.5}
+{"part": "phrase", "enc": "atom", "pairs": 256, "rule": "reverse", "L": 4096, "D": 16, "P": 64, "steps": 3000, "seed": 0, "char_acc": 0.6152, "string_acc": 0.1641, "params": 3072, "bits_stored": 672, "sec": 101.2}
+{"part": "phrase", "enc": "pair", "pairs": 256, "rule": "reverse", "L": 4096, "D": 16, "P": 64, "steps": 3000, "seed": 0, "char_acc": 0.5322, "string_acc": 0.1094, "params": 3072, "bits_stored": 448, "sec": 103.4}
+{"part": "phrase", "enc": "atom", "pairs": 1024, "rule": "reverse", "L": 4096, "D": 16, "P": 64, "steps": 3000, "seed": 0, "char_acc": 0.2434, "string_acc": 0.002, "params": 3072, "bits_stored": 32, "sec": 101.1}
+{"part": "phrase", "enc": "pair", "pairs": 1024, "rule": "reverse", "L": 4096, "D": 16, "P": 64, "steps": 3000, "seed": 0, "char_acc": 0.2126, "string_acc": 0.0029, "params": 3072, "bits_stored": 48, "sec": 103.5}
+{"part": "rule", "enc": "pair", "pairs": 64, "rule": "copy", "L": 4096, "D": 16, "P": 64, "steps": 3000, "seed": 0, "char_acc": 0.7272, "string_acc": 0.276, "params": 3072, "bits_stored": 4416, "sec": 103.5}
+{"part": "rule", "enc": "pair", "pairs": 64, "rule": "map", "L": 4096, "D": 16, "P": 64, "steps": 3000, "seed": 0, "char_acc": 0.733, "string_acc": 0.272, "params": 3072, "bits_stored": 4352, "sec": 103.6}
+{"part": "rule", "enc": "pair", "pairs": 64, "rule": "reverse", "L": 4096, "D": 16, "P": 64, "steps": 3000, "seed": 0, "char_acc": 0.7078, "string_acc": 0.248, "params": 3072, "bits_stored": 3968, "sec": 103.6}
