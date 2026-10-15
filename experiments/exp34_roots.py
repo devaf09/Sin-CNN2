@@ -41,6 +41,30 @@ def class_scores(z, classes):
     return lp @ M.T + ln @ (1 - M).T
 
 
+def gzsl(z_fn, test, classes, prior, gammas=(0, 1, 2, 3, 4)):
+    """実験36: 全 12 クラスから選ぶとき、新しい物が既知の物に引き寄せられる偏りを直す。
+    prior: 部品の出やすさ p_f（学習データでの割合）。z から logit(p_f) を引いて「出やすさの偏り」を除く。
+    gamma: 既知のクラスの点数から γ を引く（較正つきの積み重ね）。
+    S = 既知の正答、U = 新しい物の正答、H = 調和平均 2SU/(S+U)（一般化ゼロショット学習の標準的な指標）"""
+    z = {c: z_fn(test[c]) for c in range(12)}
+    out = {}
+    for adj in ("raw", "prior"):
+        shift = torch.logit(prior.clamp(0.02, 0.98)) if adj == "prior" else torch.zeros(8)
+        for g in gammas:
+            acc = {}
+            for name, ids in (("S", range(8)), ("U", range(8, 12))):
+                correct = total = 0
+                for c in ids:
+                    s = class_scores(z[c] - shift, classes)
+                    s[:, :8] -= g
+                    correct += (s.argmax(1) == c).sum().item()
+                    total += len(s)
+                acc[name] = correct / total
+            H = 2 * acc["S"] * acc["U"] / (acc["S"] + acc["U"] + 1e-9)
+            out[f"{adj}_g{g}"] = dict(S=round(acc["S"], 4), U=round(acc["U"], 4), H=round(H, 4))
+    return out
+
+
 def evaluate(z_fn, test, classes):
     res = {}
     xs = {c: test[c] for c in range(12)}
@@ -88,6 +112,8 @@ if __name__ == "__main__":
         return torch.cat([net(net.encode(texts[j:j + 512])) for j in range(0, len(texts), 512)]).cpu()
 
     R["sinwave_roots"] = evaluate(z_sinwave, test, classes)
+    prior = Yf.mean(0)
+    R["sinwave_gzsl"] = gzsl(z_sinwave, test, classes, prior)
 
     # 比較: 文字の出現回数のロジスティック回帰で部品を検出
     Xb = bag(xs)
@@ -98,6 +124,7 @@ if __name__ == "__main__":
         l = F.binary_cross_entropy_with_logits(Xb @ W + b, Yf) + 1e-3 * (W ** 2).sum()
         o.zero_grad(); l.backward(); o.step()
     R["bag_roots"] = evaluate(lambda t: (bag(t) @ W + b).detach(), test, classes)
+    R["bag_gzsl"] = gzsl(lambda t: (bag(t) @ W + b).detach(), test, classes, prior)
 
     # 比較: クラスごとの検出器（従来、基本 8 クラスのみ）
     head = sw.train(sw.SinWaveNet(8, list(range(8)), patterns=a.patterns, seed=a.seed).to(dev), xs,

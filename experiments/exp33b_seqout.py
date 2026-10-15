@@ -8,6 +8,7 @@
 取り出し方 (--read)
   shared: 全部の文字を 1 つの光で干渉させ、1 つの出力面で全位置を読む（文字と位置の組ごとの向きで入れる）
   color : 位置ごとに別の色。出力側で色を分け、色 m の光で位置 m を読む（波長分割）
+  mix   : code の取り出し側の符号を学習する（実験37。入力のどの位置を出力のどの位置へ送るかの配線）
   code  : 位置 m に位相の符号 c_j(m) = exp(i2πjm/n) を付けた照明 n 通り。出力の場に符号の逆を掛けて足し、
           位置 m の光だけを取り出して読む（CDMA の逆拡散。光学系は場に対して線形なので、通った後で分けられる）
 予想: color と code は「その位置の入力 → その位置の出力」しか作れない（他の位置の情報が混ざらない）ので、
@@ -36,7 +37,7 @@ CHARS = [chr(0x3041 + i) for i in range(V)]   # 文字コード mod 16 がすべ
 def make_data(n_samples, seed, task):
     r = random.Random(seed)
     X = torch.tensor([[r.randrange(V) for _ in range(N)] for _ in range(n_samples)])
-    Y = X if task == "copy" else torch.roll(X, -1, dims=1)
+    Y = {"copy": X, "shift": torch.roll(X, -1, dims=1), "reverse": X.flip(1)}[task]
     return X, Y
 
 
@@ -50,7 +51,7 @@ def waves(X, L, dev, pair):
     return torch.exp(1j * (2 * math.pi * f[..., None].float() * x / L + th[..., None])) / math.sqrt(N)
 
 
-def readout(model, X, mode, L, dev):
+def readout(model, X, mode, L, dev, E=None):
     """(B, N, V) の点数"""
     def lens_detect(u):                       # u: (..., L) → 全窓の点数 (..., N*V)
         u = torch.fft.fftshift(torch.fft.fft(u, norm="ortho"), dim=-1)
@@ -66,12 +67,13 @@ def readout(model, X, mode, L, dev):
         u = model.field(w[:, :, None])[:, :, 0]                                       # 位置ごとに別の色 (B, N, L)
         s = lens_detect(u)                                                            # (B, N色, N, V)
         return torch.stack([s[:, m, m] for m in range(N)], 1)                         # 色 m の光で位置 m を読む
-    if mode == "code":
+    if mode in ("code", "mix"):
         j = torch.arange(N, device=dev, dtype=torch.float32)
         Cm = torch.exp(1j * (2 * math.pi * j[:, None] * j[None, :] / N))             # c_j(m) (j, m)
         U = torch.einsum("jm,bml->bjl", Cm, w)                                        # 照明 j の場
         u = model.field(U[:, :, None])[:, :, 0]                                       # 光学系を通す (B, j, L)
-        v = torch.einsum("jm,bjl->bml", Cm.conj(), u) / N                             # 逆拡散: 位置 m の光だけ
+        D = Cm.conj() if mode == "code" else torch.complex(E[0], E[1])                # mix: 取り出しの符号を学習（実験37）
+        v = torch.einsum("jm,bjl->bml", D, u) / N                                     # 逆拡散: code なら位置 m の光だけ
         s = lens_detect(v)
         return torch.stack([s[:, m, m] for m in range(N)], 1)
     raise ValueError(mode)
@@ -93,17 +95,22 @@ if __name__ == "__main__":
     Xte, Yte = make_data(1000, a.seed + 2, a.task)
     model = SinWave(Config(L=a.L, C=N * V, far=True)).to(dev)
     model.add_layers(a.D, 1, "phase", seed=a.seed, P=a.P)
-    opt = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=0.01)
+    # 実験37 (mix): 出力の位置 k を読む符号の組 E (N×N の複素数) を学習する。入力と同じ符号で初期化。
+    # 入力側の符号とずらせば「入力のどの位置の光を、出力のどの位置へ送るか」の配線になる（パラメータ 32 個）
+    j0 = torch.arange(N, dtype=torch.float32)
+    C0 = torch.exp(1j * (2 * math.pi * j0[:, None] * j0[None, :] / N)).conj()
+    E = torch.nn.Parameter(torch.stack([C0.real, C0.imag]).to(dev)) if a.read == "mix" else None
+    opt = torch.optim.Adam([p for p in model.parameters() if p.requires_grad] + ([E] if E is not None else []), lr=0.01)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.steps)
     gen = torch.Generator().manual_seed(a.seed)
     t0 = time.time()
     for s in range(a.steps):
         i = torch.randint(len(Ytr), (256,), generator=gen)
-        out = readout(model, Xtr[i], a.read, a.L, dev)
+        out = readout(model, Xtr[i], a.read, a.L, dev, E)
         loss = F.cross_entropy(out.reshape(-1, V), Ytr[i].to(dev).reshape(-1))
         opt.zero_grad(); loss.backward(); opt.step(); sched.step()
     with torch.no_grad():
-        pred = torch.cat([readout(model, Xte[j:j + 250], a.read, a.L, dev).argmax(-1).cpu() for j in range(0, len(Yte), 250)])
+        pred = torch.cat([readout(model, Xte[j:j + 250], a.read, a.L, dev, E).argmax(-1).cpu() for j in range(0, len(Yte), 250)])
     per_pos = (pred == Yte).float().mean(0)
     print(json.dumps(dict(vars(a), per_position=[round(v, 3) for v in per_pos.tolist()],
                           char_acc=round((pred == Yte).float().mean().item(), 4),

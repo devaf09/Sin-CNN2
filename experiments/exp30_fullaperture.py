@@ -32,6 +32,15 @@ import torch.nn.functional as F
 from sinwave.model import Config, SinWave, char_phase
 
 GOLD = 0.6180339887
+STRIDE = 0   # 0: 周波数をそのまま使う。>0: f·STRIDE mod L（--stride で設定）
+
+
+def coprime_stride(L):
+    """L と約数を共有しない（互いに素な）、L の約 0.618 倍の歩幅。"""
+    g = int(L * GOLD) | 1
+    while math.gcd(g, L) != 1:
+        g += 2
+    return g
 
 
 class Encoder:
@@ -67,6 +76,8 @@ def make_fields(codes, theta, pos, mask, L, n, mode, mix, d0, dev):
     codes, theta, pos, mask = codes.to(dev), theta.to(dev), pos.to(dev).float(), mask.to(dev)
     x = torch.arange(L, device=dev, dtype=torch.float32)
     f = codes.float() * n + (pos if mode == "pair" else 0)                      # 向き（空間周波数の番号）
+    if STRIDE:   # 実験35: 小さな L でも重ならないよう、L と約数を共有しない歩幅で周波数を並べ直す（f·g mod L）
+        f = torch.remainder(f * STRIDE, L)
     ph = 2 * math.pi * f[..., None] * x / L + theta[..., None]                   # (B, n, L)
     if mode == "phase":
         ph = ph + (2 * math.pi * GOLD * pos)[..., None]
@@ -133,6 +144,8 @@ if __name__ == "__main__":
     ap.add_argument("--focus", action="store_true", help="レイヤごとに学習できる焦点の強さを足す")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max_train", type=int, default=0, help="動作確認用に訓練例を減らす")
+    ap.add_argument("--stride", action="store_true", help="実験35: 周波数を f·g mod L に並べ直す（g は L と互いに素）")
+    ap.add_argument("--paths", type=int, default=1, help="実験35: 光路を何本並べるか（幅）")
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(a.seed)
@@ -141,19 +154,31 @@ if __name__ == "__main__":
         xtr, ytr, xte, yte = xtr[:a.max_train], ytr[:a.max_train], xte[:a.max_train // 2], yte[:a.max_train // 2]
     steps = a.steps or (3000 if is_text else 1500)
     enc = Encoder(n, cd["V"], cd["code"], xtr, from_end=is_text)
-    if (cd["V"] - 1) * n + n > a.L:
-        raise SystemExit(f"L={a.L} では周波数が足りない（必要 {cd['V'] * n}）")
     Ttr, Tte = enc.table(xtr), enc.table(xte)
     Ytr, Yte = torch.tensor(ytr), torch.tensor(yte)
+    if a.stride:
+        STRIDE = coprime_stride(a.L)
+    elif (cd["V"] - 1) * n + n > a.L:
+        raise SystemExit(f"L={a.L} では周波数が足りない（必要 {cd['V'] * n}）。--stride で並べ直せる")
+    # 使われている（文字, 位置）の周波数のうち、別のものと重なってしまった割合
+    codes_, _, pos_, mask_ = Ttr
+    raw = (codes_ * n + (pos_ if a.pos == "pair" else 0))[mask_ > 0].unique()
+    fq = torch.remainder(raw * STRIDE, a.L) if STRIDE else raw
+    collided = round(1 - fq.unique().numel() / max(raw.numel(), 1), 4)
 
-    cfg = Config(L=a.L, C=C, far=True, bias=is_text, nl=a.nl, focus=a.focus)
-    model = SinWave(cfg).to(dev)
-    model.add_layers(a.D, 1, "phase", seed=a.seed, P=a.P)
-    model.bias.requires_grad_(is_text)
-    if a.freeze_w:
-        for l in model.layers:
-            l.w.requires_grad_(False)
-    params = [p for p in model.parameters() if p.requires_grad]
+    # 光路を a.paths 本並べる（幅）。点数はその平均（明るさの平均）
+    models = []
+    for k in range(a.paths):
+        cfg = Config(L=a.L, C=C, far=True, bias=is_text, nl=a.nl, focus=a.focus)
+        model = SinWave(cfg).to(dev)
+        model.add_layers(a.D, 1, "phase", seed=a.seed + 100 * k, P=a.P)
+        model.bias.requires_grad_(is_text)
+        if a.freeze_w:
+            for l in model.layers:
+                l.w.requires_grad_(False)
+        models.append(model)
+    run = lambda U: sum(forward(m, U, a.mix, n) for m in models) / len(models)
+    params = [p for m in models for p in m.parameters() if p.requires_grad]
     opt = torch.optim.Adam(params, lr=0.01)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, steps)
     gen = torch.Generator().manual_seed(a.seed)
@@ -161,15 +186,17 @@ if __name__ == "__main__":
     for s in range(steps):
         i = torch.randint(len(Ytr), (min(256, len(Ytr)),), generator=gen)
         U = make_fields(*(t[i] for t in Ttr), a.L, n, a.pos, a.mix, a.d0, dev)
-        loss = F.cross_entropy(forward(model, U, a.mix, n), Ytr[i].to(dev))
+        loss = F.cross_entropy(run(U), Ytr[i].to(dev))
         opt.zero_grad(); loss.backward(); opt.step(); sched.step()
+    train_sec = time.time() - t0
 
     @torch.no_grad()
     def evaluate(T, Y):
-        lg = torch.cat([forward(model, make_fields(*(t[j:j + 256] for t in T), a.L, n, a.pos, a.mix, a.d0, dev), a.mix, n)
+        lg = torch.cat([run(make_fields(*(t[j:j + 256] for t in T), a.L, n, a.pos, a.mix, a.d0, dev))
                         for j in range(0, len(Y), 256)]).cpu()
         return round((lg.argmax(1) == Y).float().mean().item(), 4), round(F.cross_entropy(lg, Y).item(), 4)
 
-    res = dict(vars(a), n_pos=n, train=evaluate(Ttr, Ytr)[0], test=evaluate(Tte, Yte),
-               params=sum(p.numel() for p in model.layers.parameters() if p.requires_grad), sec=round(time.time() - t0, 1))
+    res = dict(vars(a), n_pos=n, stride_g=STRIDE, collided=collided, train=evaluate(Ttr, Ytr)[0], test=evaluate(Tte, Yte),
+               params=sum(p.numel() for m in models for p in m.layers.parameters() if p.requires_grad),
+               sec=round(train_sec, 1), ms_per_step=round(1000 * train_sec / steps, 2))
     print(json.dumps(res, ensure_ascii=False), flush=True)
