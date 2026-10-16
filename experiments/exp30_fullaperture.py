@@ -33,6 +33,7 @@ from sinwave.model import Config, SinWave, char_phase
 
 GOLD = 0.6180339887
 STRIDE = 0   # 0: 周波数をそのまま使う。>0: f·STRIDE mod L（--stride で設定）
+CHORD = 1    # 1 文字あたりの周波数の本数（実験39、--chord で設定）
 
 
 def coprime_stride(L):
@@ -86,6 +87,15 @@ def make_fields(codes, theta, pos, mask, L, n, mode, mix, d0, dev):
         ph = ph + math.pi * (x - L / 2) ** 2 / d[..., None]                      # 点光源からの球面波（波長 1）
     amp = mask / mask.sum(1, keepdim=True).clamp(min=1).sqrt()                   # 全体の明るさを揃える
     w = torch.polar(amp[..., None].expand_as(ph), ph)                            # (B, n, L)
+    if CHORD > 1:
+        # 実験39: 1 文字を周波数 CHORD 本の「和音」にする。2 本目以降は文字コードから決まる固定の位置
+        # （区別できる文字の数が組み合わせで増える。計算回数は同じ）。位置の情報は全部の線に同じように付く
+        extra = ph - 2 * math.pi * f[..., None] * x / L                         # 位置・文字の位相の分
+        for k in range(1, CHORD):
+            off = torch.remainder(codes.long() * 2654435761 + k * 40503, L).float()
+            fk = torch.remainder(f + off, L)
+            w = w + torch.polar(amp[..., None].expand_as(ph), 2 * math.pi * fk[..., None] * x / L + extra + 1.3 * k)
+        w = w / math.sqrt(CHORD)
     if mix == "coh":
         return w.sum(1, keepdim=True)
     if mix == "color":
@@ -146,10 +156,15 @@ if __name__ == "__main__":
     ap.add_argument("--max_train", type=int, default=0, help="動作確認用に訓練例を減らす")
     ap.add_argument("--stride", action="store_true", help="実験35: 周波数を f·g mod L に並べ直す（g は L と互いに素）")
     ap.add_argument("--paths", type=int, default=1, help="実験35: 光路を何本並べるか（幅）")
+    ap.add_argument("--chord", type=int, default=1, help="実験39: 1 文字あたりの周波数の本数（和音）")
+    ap.add_argument("--V", type=int, default=0, help="文字の番号の数を上書き（0 なら課題の既定）")
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(a.seed)
     xtr, ytr, xte, yte, C, n, cd, is_text = load_task(a.task, a.n)
+    CHORD = a.chord
+    if a.V:
+        cd["V"] = a.V
     if a.max_train:
         xtr, ytr, xte, yte = xtr[:a.max_train], ytr[:a.max_train], xte[:a.max_train // 2], yte[:a.max_train // 2]
     steps = a.steps or (3000 if is_text else 1500)
