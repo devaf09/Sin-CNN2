@@ -1,0 +1,2 @@
+{"K": 1024, "model": "ngram", "T": 8, "alpha": 0.3, "L": 2048, "D": 32, "P": 256, "emb": 16, "hid": 32, "steps": 6000, "lr": 0.01, "seed": 0, "char_1gram_ce_per_char": 5.5286, "char_2gram_ce_per_char": 3.9733, "char_3gram_ce_per_char": 3.676, "char_4gram_ce_per_char": 3.8909}
+{"K": 0, "model": "gru", "T": 8, "alpha": 0.3, "L": 2048, "D": 32, "P": 256, "emb": 16, "hid": 32, "steps": 6000, "lr": 0.01, "seed": 0, "vocab": 2072, "chars_per_token_test": 1.0, "params": 106328, "token_acc": 0.2982, "ce_per_token": 3.7169, "ce_per_char": 3.7169, "sec": 8.8}

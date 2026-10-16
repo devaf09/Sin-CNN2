@@ -5,7 +5,11 @@
 
     import sinwave_minimal as sw
 
-    net = sw.SinWaveNet(n_slots=8, own=[0, 1, 2, 3])       # 検出器 8 個のうち 0〜3 番を担当する技能
+    net = sw.fit(texts, labels)                            # 1 行で: データから設定を自動で選び、作って学習（v1.2）
+    sw.predict_labels(net, ["こんにちは"])                  # → ["挨拶"]（ラベル名で答える）
+    print(sw.summary(net), net.auto_reasons)               # 選んだ設定と、その理由
+
+    net = sw.SinWaveNet(n_slots=8, own=[0, 1, 2, 3], size="medium")   # 自分で決めるとき（検出器 8 個のうち 0〜3 番を担当）
     sw.train(net, texts, labels)                           # labels は検出器の番号 (0〜3)
     sw.predict(net, ["こんにちは"])                         # → [検出器の番号]
 
@@ -24,6 +28,11 @@
 前提知識なしの解説は docs/introduction.md、実験の記録は NOTES.md。
 
 変更履歴（成果が出たらここを更新する）
+    1.2.0 (2026-10-18)  使いやすさの改良（学習器の中身は 1.1.0 と同じ）。
+                        size="small"/"medium"/"large" で大きさをまとめて選べる。
+                        auto_config(texts, labels): データから設定（文字数・V・L・文字の合わせ方・大きさ・学習回数）を選び、理由も返す。
+                        fit(texts, labels): 自動で選んで作って学習する 1 行の入口。ラベルは名前のままでよい（predict_labels で名前を返す）。
+                        evaluate（正解率）、summary（設定と大きさ）、trace（光の通り道の記録。examples/visualize.py が使う）。
     1.1.0 (2026-10-17)  既定の入力を「各文字の光がレイヤ全体を照らす」方式に変更（input="wave"、実験30・33・35）。
                         文字どうしの合わせ方は虹（位置ごとに周波数を少しずつずらす。隣どうしは干渉し、離れた文字どうしは干渉しない）。
                         周波数を L と互いに素な歩幅で並べ直し、L=1024 で足りるようにした（計算 1/2〜1/4）。
@@ -50,7 +59,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 
 # =============================================================================================
@@ -137,6 +146,10 @@ def encode(texts: list[str], L: int, S: int, device=None) -> torch.Tensor:
 # 2. 学習器本体
 # =============================================================================================
 
+# 大きさの目安（板の枚数, 区画の数）。大きいほど覚えられるが、計算と学習の時間が増える。
+#   本物の文章の次文字予測で small 44% → large 49%（実験35）。短い文字列の分類なら small で足りることが多い
+SIZES = {"small": (16, 64), "medium": (24, 128), "large": (32, 256)}
+
 class SinWaveNet(nn.Module):
     """1 本の光路（= 1 つの技能）。
 
@@ -153,13 +166,20 @@ class SinWaveNet(nn.Module):
     mix      : （input="wave" のとき）文字どうしの合わせ方。"rainbow"（既定）/ "color" / "coh"（encode_wave を参照）
     max_chars: （input="wave" のとき）使う文字数
     V        : （input="wave" のとき）文字コードを V で割った余りで文字を区別する（ひらがな+カタカナなら 256）
+    size     : 大きさをまとめて選ぶ。"small"（16 枚 × 64 区画、約 2000 個）/ "medium"（24 × 128、約 6000 個）/
+               "large"（32 × 256、約 16000 個）。指定すると layers・patches より優先する
+    自分で決めるのが面倒なら auto_config(texts, labels) か fit(texts, labels) を使う（データから自動で選ぶ）。
     """
 
     def __init__(self, n_slots: int, own: list[int] | None = None, L: int | None = None, S: int = 256,
                  layers: int = 16, patches: int = 64, patterns: int = 0, seed: int = 0,
                  input: str = "wave", mix: str = "rainbow", max_chars: int = 10, V: int = 256,
-                 rb: float = 0.5, T: int = 8):
+                 rb: float = 0.5, T: int = 8, size: str | None = None):
         super().__init__()
+        if size is not None:
+            if size not in SIZES:
+                raise ValueError(f"size は {list(SIZES)} のどれか")
+            layers, patches = SIZES[size]
         L = L or (1024 if input == "wave" else 2048)   # wave は L=1024 で足りる（実験35）
         self.n_slots, self.L, self.S = n_slots, L, S
         self.input, self.mix, self.max_chars, self.V, self.rb, self.T = input, mix, max_chars, V, rb, T
@@ -322,6 +342,96 @@ def predict(net, texts: list[str]) -> list[int]:
     return scores(net, list(texts)).argmax(1).tolist()
 
 
+def evaluate(net, texts: list[str], labels: list) -> float:
+    """正解率。labels は検出器の番号、または fit で学習したときのラベル名。"""
+    pred = predict_labels(net, texts) if getattr(net, "classes", None) and not isinstance(labels[0], int) else predict(net, texts)
+    return sum(p == y for p, y in zip(pred, labels)) / len(labels)
+
+
+def predict_labels(net, texts: list[str]) -> list:
+    """fit で学習した光路なら、検出器の番号ではなくラベル名で答える。"""
+    names = getattr(net, "classes", None)
+    idx = predict(net, texts)
+    return [names[i] for i in idx] if names else idx
+
+
+def summary(net) -> str:
+    """設定と大きさを 1 行で。"""
+    c = net.config
+    kb = (net.A.numel() * 2 + 1 + net.bias.numel()) * 4 / 1024
+    form = f"wave/{c['mix']} 文字数{c['max_chars']} V={c['V']}" if c["input"] == "wave" else f"slot S={c['S']} 照明{c['patterns']}"
+    return (f"SinWave {__version__}: 板 {c['layers']} 枚 × 区画 {c['patches']}、L={c['L']}、入力 {form}、"
+            f"窓 {c['n_slots']} 個（担当 {len(net.own)}）、学習するパラメータ {sum(p.numel() for p in net.parameters())} 個（約 {kb:.0f}KB）")
+
+
+# =============================================================================================
+# 3b. 自動調整と、1 行で使える入口（v1.2）
+# =============================================================================================
+# これまでの実験の結果から、データを見て設定を選ぶ。選んだ理由も返すので、そのまま信じず確かめられる。
+
+def auto_config(texts: list[str], labels: list | None = None, order_matters: bool | None = None,
+                speed: str = "normal") -> dict:
+    """データから設定を選ぶ。戻り値: dict(config=SinWaveNet に渡す設定, steps=学習の回数の目安, reasons=理由の列)
+
+    order_matters: 文字の並び（順序）が答えに効くか。True → 虹、False → 色ごと、None（分からない）→ 虹
+    speed        : "fast" なら計算 1 倍の構成（全部干渉・small）を選ぶ
+    """
+    reasons = []
+    lens = sorted(len(t) for t in texts)
+    max_chars = max(2, min(32, lens[int(0.95 * (len(lens) - 1))]))
+    reasons.append(f"文字数: 文字列の 95% が {max_chars} 文字以内 → max_chars={max_chars}")
+    chars = sorted(set("".join(texts)))
+    V = next((v for v in (256, 512, 1024, 2048, 4096, 8192) if len({ord(c) % v for c in chars}) == len(chars)), 8192)
+    reasons.append(f"文字の種類 {len(chars)} 種 → 文字コードの余りが重ならない最小の V={V}")
+    L = None
+    for cand in (512, 1024, 2048, 4096):     # 周波数が重ならない最小の L（実験35: L を小さくしても同等。256 は順序で落ちる）
+        g = coprime_stride(cand)
+        if len({((ord(c) % V) * max_chars * g) % cand for c in chars}) == len(chars):
+            L = cand
+            break
+    if L is None:
+        L = 4096
+        reasons.append("L=4096 でも一部の文字の周波数が重なる（文字の種類が多すぎる）")
+    else:
+        reasons.append(f"文字の周波数が重ならない最小の L={L}（計算量は L にほぼ比例）")
+    if speed == "fast":
+        mix = "coh"
+        reasons.append("速さ優先 → 全部干渉（計算 1 倍。文字頻度の課題で約 89〜91%、実験35）")
+    elif order_matters is False:
+        mix = "color"
+        reasons.append("順序は効かない → 文字ごとに色（文字頻度で最良 95%、実験30。計算は文字数倍）")
+    else:
+        mix = "rainbow"
+        reasons.append("順序が効く（または不明）→ 虹（順序と頻度を両立、実験33。計算は 8 倍）")
+    N = len(texts)
+    size = "small" if speed == "fast" or N < 2000 else ("medium" if N < 20000 else "large")
+    reasons.append(f"学習データ {N} 件 → 大きさ {size}（少ないデータで大きくすると丸暗記しやすい）")
+    steps = {"small": 1500, "medium": 3000, "large": 6000}[size]
+    cfg = dict(input="wave", mix=mix, max_chars=max_chars, V=V, L=L, size=size)
+    if labels is not None:
+        cfg["n_slots"] = len(set(labels))
+    return dict(config=cfg, steps=steps, reasons=reasons)
+
+
+def fit(texts: list[str], labels: list, order_matters: bool | None = None, speed: str = "normal",
+        steps: int | None = None, device=None, verbose: bool = False, **overrides) -> SinWaveNet:
+    """1 行で: 設定を自動で選び、光路を作って学習する。labels は好きな名前でよい（"挨拶" など）。
+    overrides で自動の設定を上書きできる（例: fit(texts, labels, size="large", mix="color")）。
+    答えは predict_labels(net, texts) で名前として受け取れる。"""
+    auto = auto_config(texts, labels, order_matters, speed)
+    names = sorted(set(labels), key=str)
+    cfg = dict(auto["config"], **overrides)
+    cfg.setdefault("n_slots", len(names))
+    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    net = SinWaveNet(**cfg).to(dev)
+    net.classes = names
+    net.auto_reasons = auto["reasons"]
+    if verbose:
+        print("\n".join(["自動で選んだ設定:"] + ["  " + r for r in auto["reasons"]] + ["  " + summary(net)]))
+    idx = {n: i for i, n in enumerate(names)}
+    return train(net, texts, [idx[y] for y in labels], steps=steps or auto["steps"], verbose=verbose)
+
+
 # =============================================================================================
 # 4. 融合・取消（並列光路）と、光路の足し算・引き算
 # =============================================================================================
@@ -442,7 +552,7 @@ def save(net: SinWaveNet, path: str) -> None:
     """学習した値（A, φ, 温度, 背景光）と設定だけを保存する（1 技能 約 10KB）。ω などの固定部品は設定から作り直す。"""
     torch.save({"version": __version__, "config": dict(net.config, own=net.own),
                 "state": {k: v for k, v in net.state_dict().items() if k in ("A", "phi", "gain", "bias")},
-                "root_prior": getattr(net, "root_prior", None)}, path)
+                "root_prior": getattr(net, "root_prior", None), "classes": getattr(net, "classes", None)}, path)
 
 
 def load(path: str, device=None) -> SinWaveNet:
@@ -453,6 +563,8 @@ def load(path: str, device=None) -> SinWaveNet:
     net.load_state_dict(d["state"], strict=False)
     if d.get("root_prior") is not None:
         net.root_prior = d["root_prior"]
+    if d.get("classes") is not None:
+        net.classes = d["classes"]
     return net.to(device) if device is not None else net
 
 

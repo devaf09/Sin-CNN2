@@ -95,8 +95,27 @@ def test_wave_and_roots():
         assert torch.equal(sw.load(path).root_prior, r.root_prior)
 
 
+def test_auto_and_fit():
+    """v1.2: 自動調整と 1 行の入口、ラベル名、大きさの選択。"""
+    texts = ["あいうえ", "かきくけ", "あかいう", "きかくけ"] * 10
+    labels = ["あ行", "か行", "あ行", "か行"] * 10
+    auto = sw.auto_config(texts, labels, order_matters=False)
+    assert auto["config"]["mix"] == "color" and auto["config"]["n_slots"] == 2 and auto["reasons"]
+    assert sw.auto_config(texts, speed="fast")["config"]["mix"] == "coh"
+    net = sw.fit(texts, labels, steps=5, device="cpu", layers=2, patches=16)
+    assert set(sw.predict_labels(net, texts[:4])) <= {"あ行", "か行"}
+    assert 0.0 <= sw.evaluate(net, texts, labels) <= 1.0
+    assert "SinWave" in sw.summary(net)
+    with tempfile.TemporaryDirectory() as d:                          # ラベル名も保存される
+        path = os.path.join(d, "f.pt")
+        sw.save(net, path)
+        assert sw.load(path).classes == net.classes
+    assert sw.SinWaveNet(2, size="large").A.shape == (32, 256)
+
+
 if __name__ == "__main__":
     test_same_as_reference()
+    test_auto_and_fit()
     test_merge_remove_combine_save()
     test_wave_and_roots()
     print("ok")
