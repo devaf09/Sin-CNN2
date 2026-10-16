@@ -239,6 +239,30 @@ class SinWaveNet(nn.Module):
         inten = u.abs().pow(2).mean(1)                                # 明るさ、照明パターンについて平均
         return inten / (inten.mean(-1, keepdim=True) + 1e-12)
 
+    @torch.no_grad()
+    def trace(self, u: torch.Tensor) -> dict:
+        """説明・可視化用: 1 つの入力について、光が板を通るたびの様子を記録する（計算は intensity と同じ）。
+        戻り値: layers = 各板の後の明るさ (板の数, L)、spectra = 各板の後の光をレンズで見たときの明るさ（光の向き）(板の数, L)、
+                masks = 各板の位相の遅れ (板の数, L)、screen = スクリーンの明るさ (L,)"""
+        u = u[:1]
+        if u.dim() == 2:
+            u = u[:, None] * self.illum[None]
+            u = (torch.roll(u, -self.S, -1) + u + torch.roll(u, self.S, -1)) / 3
+        rows, masks, spectra = [], [], []
+        for d in range(self.A.shape[0]):
+            p = self.patch
+            phase = self.A[d, p] * torch.sin(self.w[d, p] * self.t + self.phi[d, p])
+            u = u * torch.polar(torch.ones_like(phase), phase)
+            u = torch.fft.ifft(torch.fft.fft(u) * self.H)
+            u = u / (u.abs().pow(2).mean(-1, keepdim=True) + 1e-24).sqrt()
+            rows.append(u.abs().pow(2).mean(1)[0])
+            sp = torch.fft.fftshift(torch.fft.fft(u, norm="ortho"), dim=-1).abs().pow(2).mean(1)[0]
+            spectra.append(sp / sp.mean())
+            masks.append(phase)
+        far = torch.fft.fftshift(torch.fft.fft(u, norm="ortho"), dim=-1).abs().pow(2).mean(1)[0]
+        return dict(layers=torch.stack(rows).cpu(), spectra=torch.stack(spectra).cpu(), masks=torch.stack(masks).cpu(),
+                    screen=(far / far.mean()).cpu())
+
     def forward(self, u: torch.Tensor) -> torch.Tensor:
         """光の場 (N, L) → 検出器ごとのスコア (N, n_slots)。"""
         return self.gain * (self.intensity(u) @ self.det.T) + self.bias
