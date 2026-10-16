@@ -39,6 +39,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=8, help="文脈の文字数（並びの長さ）")
     ap.add_argument("--alpha", type=float, default=0.5)
+    ap.add_argument("--mem", default="mix", help="記憶の方式（実験42）: mix（混ぜるだけ）/ shift（前の光の周波数をずらしてから混ぜる）/ band（帯域ごとに混ぜる割合を学習）")
+    ap.add_argument("--shift", type=int, default=7, help="shift: 1 ステップでずらす周波数の本数")
+    ap.add_argument("--bands", type=int, default=8, help="band: 帯域の数")
     ap.add_argument("--L", type=int, default=1024)
     ap.add_argument("--V", type=int, default=512, help="入力の文字の番号の数")
     ap.add_argument("--D", type=int, default=16)
@@ -88,7 +91,14 @@ if __name__ == "__main__":
         prev, outs = None, []
         for t in range(a.n):
             u = waves[X[:, t].to(dev)]
-            if prev is not None and a.alpha > 0:
+            if prev is not None and a.mem == "band":
+                # 帯域ごとに混ぜる割合 α_b を学習（速く忘れる帯域と、長く覚える帯域を同時に持てる）
+                al = torch.sigmoid(band_logit)[band_of]                                   # (L,) 周波数ごとの α
+                U = (1 - al) * torch.fft.fft(u) + al * torch.fft.fft(prev)
+                u = torch.fft.ifft(U)
+            elif prev is not None and a.alpha > 0:
+                if a.mem == "shift":   # 古い文字ほど遠い帯域へ移す（周波数で並ぶ記憶、シフトレジスタ）
+                    prev = prev * torch.exp(1j * (2 * math.pi * a.shift * x / L))
                 u = (1 - a.alpha) * u + a.alpha * prev
             v = model.field(u[:, None, None, :])[:, 0, 0]
             far = torch.fft.fftshift(torch.fft.fft(v, norm="ortho"), dim=-1)
@@ -97,7 +107,11 @@ if __name__ == "__main__":
             prev = v / (v.abs().pow(2).mean(-1, keepdim=True) + 1e-24).sqrt()
         return torch.stack(outs)
 
-    opt = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=0.01)
+    # band: 帯域ごとの混ぜる割合（a.alpha で初期化）
+    band_logit = torch.nn.Parameter(torch.full((a.bands,), math.log(a.alpha / (1 - a.alpha)) if 0 < a.alpha < 1 else 0.0, device=dev))
+    band_of = (torch.fft.fftfreq(L, device=dev).abs() * 2 * a.bands).long().clamp(max=a.bands - 1)    # 周波数 → 帯域
+    extra = [band_logit] if a.mem == "band" else []
+    opt = torch.optim.Adam([p for p in model.parameters() if p.requires_grad] + extra, lr=0.01)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.steps)
     gen = torch.Generator().manual_seed(a.seed)
     t0 = time.time()
@@ -110,5 +124,7 @@ if __name__ == "__main__":
         out = torch.cat([run(Xte[j:j + 512]) for j in range(0, len(Yte), 512)], 1).cpu()   # (n, N, 64)
     acc = [round((out[t].argmax(1) == Yte[:, t]).float().mean().item(), 4) for t in range(a.n)]
     ce = [round(F.cross_entropy(out[t], Yte[:, t]).item(), 3) for t in range(a.n)]
-    print(json.dumps(dict(vars(a), acc_by_context=acc, ce_by_context=ce, sec=round(time.time() - t0, 1),
+    if a.mem == "band":
+        acc_band = [round(v, 3) for v in torch.sigmoid(band_logit).tolist()]
+    print(json.dumps(dict(vars(a), band_alpha=acc_band if a.mem == "band" else None, acc_by_context=acc, ce_by_context=ce, sec=round(time.time() - t0, 1),
                           note="acc_by_context[t] = 文脈 t+1 文字で次の文字を当てた正答率"), ensure_ascii=False), flush=True)
