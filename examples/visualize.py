@@ -53,7 +53,7 @@ def japanese_font():
     print("日本語のフォントが見つからないので、文字が四角になるかもしれない")
 
 
-def draw(fig, axes, net, sample_text, sample_label, history, test, step):
+def draw(fig, axes, net, sample_text, sample_label, history, test, step, log_x=True):
     import numpy as np
     for ax in axes.flat:
         ax.clear()
@@ -118,6 +118,9 @@ def draw(fig, axes, net, sample_text, sample_label, history, test, step):
         ax2.plot(history["step"], history["acc"], color="tab:green", label="正解率")
         ax2.set_ylim(0, 1.05)
         ax2.set_ylabel("正解率（学習に使っていない問題）", color="tab:green")
+        if log_x:
+            ax.set_xscale("symlog", linthresh=1)   # 対数の目盛り（0 も描けるよう 0〜1 だけは等間隔）
+            ax.set_xlim(0, max(history["step"][-1], 1) * 1.1)
     ax.set_title(f"⑤ 学習の進み具合（{step} ステップ）")
     ax.set_xlabel("ステップ")
 
@@ -138,10 +141,24 @@ def draw(fig, axes, net, sample_text, sample_label, history, test, step):
     fig.tight_layout()
 
 
+def draw_steps(steps, every):
+    """絵を更新するステップ。"log" なら 1, 1.5, 2, 3, 5, 7 × 10^k（学習は最初の 100 ステップでほぼ決まるので、そこを細かく見る）。"""
+    if every == "log":
+        marks = {0, steps}
+        k = 1
+        while k <= steps:
+            for m in (1, 1.5, 2, 3, 5, 7):
+                if m * k <= steps:
+                    marks.add(int(m * k))
+            k *= 10
+        return marks
+    return set(range(0, steps, int(every))) | {steps}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, default=600)
-    ap.add_argument("--every", type=int, default=50, help="何ステップごとに絵を更新するか")
+    ap.add_argument("--every", default="log", help="絵を更新する間隔: log（最初は細かく、だんだん粗く: 0,1,2,3,5,7,10,15,20,30,50,…）か、ステップ数（例 50）")
     ap.add_argument("--mix", default="coh", help="文字どうしの合わせ方 coh / rainbow / color（rainbow, color は計算が重い）")
     ap.add_argument("--L", type=int, default=1024)
     ap.add_argument("--save", default="", help="最後の絵を保存するファイル名 (.png)")
@@ -172,13 +189,15 @@ def main():
         plt.show()
     sample_text, sample_label = test[0]
 
+    marks = draw_steps(a.steps, a.every)
+    log_x = a.every == "log"
     for step in range(a.steps + 1):
-        if step % a.every == 0 or step == a.steps:
+        if step in marks:
             acc = sum(p == y for p, (_, y) in zip(sw.predict(net, [t for t, _ in test]), test)) / len(test)
             history["step"].append(step)
             history["acc"].append(acc)
             history["loss"].append(loss.item() if step else float("nan"))
-            draw(fig, axes, net, sample_text, sample_label, history, test, step)
+            draw(fig, axes, net, sample_text, sample_label, history, test, step, log_x)
             if not a.no_show:
                 plt.pause(0.01)
             if a.gif:
