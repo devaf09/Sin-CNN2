@@ -378,11 +378,12 @@ def train_roots(net: SinWaveNet, texts: list[str], roots: list[list[int]], steps
 
 @torch.no_grad()
 def compose(net: SinWaveNet, texts: list[str], classes: dict, seen: list | None = None, prior_adjust: bool = True,
-            gamma: float = 0.0) -> list:
+            gamma: float = 2.0) -> list:
     """部品の組み合わせで定義したクラス classes = {名前: [部品の番号, ...]} のどれに当たるかを答える。
     点数 = Σ_{部品∈クラス} log P(有る) + Σ_{部品∉クラス} log P(無い)。
     prior_adjust: 学習データでの部品の出やすさの偏りを差し引く（新しい組み合わせを既知の物と取り違えにくくする）
-    gamma       : seen（学習で見たクラスの名前）の点数から gamma を引く（較正つきの積み重ね）"""
+    gamma       : seen（学習で見たクラスの名前）の点数から gamma を引く（較正つきの積み重ね）。
+                  実験36 では prior_adjust + gamma=2 で、全部の中から新しい物を当てる正答が 40% → 78%（既知は 79% → 69%）"""
     z = torch.cat([net(net.encode(texts[i:i + 512])) for i in range(0, len(texts), 512)]).cpu()
     if prior_adjust and hasattr(net, "root_prior"):
         z = z - torch.logit(net.root_prior.cpu())
