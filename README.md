@@ -257,6 +257,11 @@ python experiments/exp06_nextchar.py --bias --n 2 --M 1 --S 1024 --L 2048 --free
 
 Python 3.10 以上、PyTorch 2.0 以上。実験は RTX 3060 (12GB) で行いました。テスト: `python -m pytest tests -q`（CPU で数十秒）。
 
+## データの出典
+
+- **CC-100 日本語**（実テキストの実験、実験06〜）: Common Crawl 由来。リポジトリには含めない（`tools/fetch_cc100_sample.py` で取得）。
+- **KRADFILE**（漢字の部品の分解、実験40）: This project uses the KRADFILE file from the [Electronic Dictionary Research and Development Group (EDRDG)](https://www.edrdg.org/), used in conformance with the Group's [licence](https://www.edrdg.org/edrdg/licence.html) (CC BY-SA 4.0)。取得元 `http://ftp.edrdg.org/pub/Nihongo/kradfile.gz`。リポジトリには含めない（`data/krad/` に置く）。
+
 ## ライセンス
 
 [MIT License](LICENSE)。ただし `tools/fetch_cc100_sample.py` で取得する CC-100 のテキストはこのライセンスの対象外で、Common Crawl の利用条件に従います。
