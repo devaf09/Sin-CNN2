@@ -47,6 +47,8 @@ if __name__ == "__main__":
     ap.add_argument("--D", type=int, default=16)
     ap.add_argument("--P", type=int, default=64)
     ap.add_argument("--steps", type=int, default=3000)
+    ap.add_argument("--model", default="optical", help="optical / gru（実験47: 規模を変えた比較用の、重みの表を持つ小型ニューラルネット）")
+    ap.add_argument("--hid", type=int, default=128, help="gru: 記憶の大きさ（埋め込みも同じ大きさ）")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -74,6 +76,19 @@ if __name__ == "__main__":
     x = torch.arange(L, device=dev, dtype=torch.float32)
     waves = torch.exp(1j * (2 * math.pi * freq[:, None] * x / L + theta[:, None]))       # (V, L)
 
+    if a.model == "gru":
+        class GRUNet(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.emb = torch.nn.Embedding(a.V, a.hid)
+                self.gru = torch.nn.GRU(a.hid, a.hid, batch_first=True)
+                self.out = torch.nn.Linear(a.hid, 64)
+
+            def forward(self, X):
+                h, _ = self.gru(self.emb(X.to(dev)))
+                return self.out(h).transpose(0, 1)               # (n, B, 64)
+        gru = GRUNet().to(dev)
+        run_gru = gru
     model = SinWave(Config(L=L, C=64, far=True, bias=True, det_width=3)).to(dev)
     model.add_layers(a.D, 1, "phase", seed=a.seed, P=a.P)
     for l in model.layers:
@@ -88,6 +103,8 @@ if __name__ == "__main__":
 
     def run(X):
         """X (B, n) → 各時刻の点数 (n, B, 64)"""
+        if a.model == "gru":
+            return run_gru(X)
         prev, outs = None, []
         for t in range(a.n):
             u = waves[X[:, t].to(dev)]
@@ -111,7 +128,9 @@ if __name__ == "__main__":
     band_logit = torch.nn.Parameter(torch.full((a.bands,), math.log(a.alpha / (1 - a.alpha)) if 0 < a.alpha < 1 else 0.0, device=dev))
     band_of = (torch.fft.fftfreq(L, device=dev).abs() * 2 * a.bands).long().clamp(max=a.bands - 1)    # 周波数 → 帯域
     extra = [band_logit] if a.mem == "band" else []
-    opt = torch.optim.Adam([p for p in model.parameters() if p.requires_grad] + extra, lr=0.01)
+    params = list(gru.parameters()) if a.model == "gru" else [p for p in model.parameters() if p.requires_grad] + extra
+    n_params = sum(p.numel() for p in params)
+    opt = torch.optim.Adam(params, lr=0.01)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.steps)
     gen = torch.Generator().manual_seed(a.seed)
     t0 = time.time()
@@ -126,5 +145,5 @@ if __name__ == "__main__":
     ce = [round(F.cross_entropy(out[t], Yte[:, t]).item(), 3) for t in range(a.n)]
     if a.mem == "band":
         acc_band = [round(v, 3) for v in torch.sigmoid(band_logit).tolist()]
-    print(json.dumps(dict(vars(a), band_alpha=acc_band if a.mem == "band" else None, acc_by_context=acc, ce_by_context=ce, sec=round(time.time() - t0, 1),
+    print(json.dumps(dict(vars(a), band_alpha=acc_band if a.mem == "band" else None, acc_by_context=acc, ce_by_context=ce, params=n_params, sec=round(time.time() - t0, 1),
                           note="acc_by_context[t] = 文脈 t+1 文字で次の文字を当てた正答率"), ensure_ascii=False), flush=True)

@@ -39,41 +39,70 @@ def coprime_stride(L):
     return g
 
 
+def context_features(vocab, tr_stream, side):
+    """単位ごとの文脈の特徴 (Vt, 64): side="right" は次に来る単位の先頭の文字の分布、"left" は前の単位の最後の文字の分布
+    （頻出 63 字 + その他）。ヘリンガー距離で比べられるよう平方根をとる。"""
+    Vt = len(vocab)
+    pick = (lambda t: vocab[t][0]) if side == "right" else (lambda t: vocab[t][-1])
+    cnt = Counter(pick(t) for s in tr_stream for t in s if vocab[t] != "<不明>")
+    top = {c: i for i, (c, _) in enumerate(cnt.most_common(63))}
+    fid = lambda t: top.get(pick(t), 63) if vocab[t] != "<不明>" else 63
+    M = torch.full((Vt, 64), 0.1)
+    for s in tr_stream:
+        for x, y in zip(s, s[1:]):
+            if side == "right":
+                M[x, fid(y)] += 1
+            else:
+                M[y, fid(x)] += 1
+    return (M / M.sum(1, keepdim=True)).sqrt()
+
+
+def kmeans(X, w, k, init, seed, iters=30):
+    g = torch.Generator().manual_seed(seed)
+    C = X[torch.tensor(init[:k])].clone()
+    for _ in range(iters):
+        lab = torch.cdist(X, C).argmin(1)
+        for j in range(k):
+            m = lab == j
+            C[j] = (X[m] * w[m, None]).sum(0) / w[m].sum() if m.any() else X[torch.randint(len(X), (1,), generator=g)][0]
+    return C
+
+
 def assign_parts(vocab, tr_stream, A, B, how, seed):
-    """単位ごとの部品の組 (a, b) を返す。"""
+    """単位ごとの部品の組 (a, b) を返す。
+    ctx   : a = 右の文脈（次に来る文字）でまとめる、b = 仲間の中での出現順（実験45）
+    left  : a = 左の文脈（前に来る文字）でまとめる、b = 出現順（実験46）
+    lr/rl : a と b の両方に意味を持たせる。a を一方の文脈で（各 a に B 個まで）、b をもう一方の文脈でまとめ、
+            (a, b) の組が重ならないよう、出現の多い順に空いている一番近い b を選ぶ（実験46）"""
     Vt = len(vocab)
     freq = Counter(t for s in tr_stream for t in s)
     order = sorted(range(Vt), key=lambda u: -freq[u])               # 出現の多い順
     if how == "random":
         perm = torch.randperm(A * B, generator=torch.Generator().manual_seed(seed))[:Vt]
         return perm // B, perm % B
-    # ctx: 次に来る単位の「先頭の文字」の分布（頻出 64 字 + その他）を特徴にする
-    first = Counter(vocab[t][0] for s in tr_stream for t in s if vocab[t] != "<不明>")
-    top = {c: i for i, (c, _) in enumerate(first.most_common(63))}
-    fid = lambda t: top.get(vocab[t][0], 63) if vocab[t] != "<不明>" else 63
-    M = torch.full((Vt, 64), 0.1)
-    for s in tr_stream:
-        for x, y in zip(s, s[1:]):
-            M[x, fid(y)] += 1
-    X = (M / M.sum(1, keepdim=True)).sqrt()                         # ヘリンガー距離で比べられる形
+    side_a = {"ctx": "right", "left": "left", "lr": "left", "rl": "right"}[how]
+    Xa = context_features(vocab, tr_stream, side_a)
     w = torch.tensor([freq[u] + 1.0 for u in range(Vt)]).log()      # 出現の多い単位を重く
-    g = torch.Generator().manual_seed(seed)
-    C = X[torch.tensor(order[:A])].clone()                          # 頻出 A 単位から始める
-    for _ in range(30):                                             # 重みつき k-means
-        lab = torch.cdist(X, C).argmin(1)
-        for k in range(A):
-            m = lab == k
-            C[k] = (X[m] * w[m, None]).sum(0) / w[m].sum() if m.any() else X[torch.randint(Vt, (1,), generator=g)][0]
-    # 容量つきの割り当て: 出現の多い順に、空きのある一番近い中心へ（各 a に B 個まで）
-    D = torch.cdist(X, C)
-    cap = [0] * A
+    Da = torch.cdist(Xa, kmeans(Xa, w, A, order, seed))
     a = torch.zeros(Vt, dtype=torch.long)
     b = torch.zeros(Vt, dtype=torch.long)
-    for u in order:
-        for k in D[u].argsort().tolist():
+    cap = [0] * A
+    for u in order:                                                 # 容量つきの割り当て（各 a に B 個まで）
+        for k in Da[u].argsort().tolist():
             if cap[k] < B:
                 a[u], b[u] = k, cap[k]
                 cap[k] += 1
+                break
+    if how in ("ctx", "left"):
+        return a, b
+    Xb = context_features(vocab, tr_stream, "right" if side_a == "left" else "left")
+    Db = torch.cdist(Xb, kmeans(Xb, w, B, order, seed + 1))
+    used = set()
+    for u in order:
+        for k in Db[u].argsort().tolist():
+            if (a[u].item(), k) not in used:
+                b[u] = k
+                used.add((a[u].item(), k))
                 break
     return a, b
 
@@ -136,7 +165,7 @@ class PartsMemory(nn.Module):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--K", type=int, default=1024)
-    ap.add_argument("--assign", default="ctx", help="ctx / random")
+    ap.add_argument("--assign", default="ctx", help="ctx / left / lr / rl / random")
     ap.add_argument("--input", default="parts", help="unit / parts")
     ap.add_argument("--A", type=int, default=56)
     ap.add_argument("--B", type=int, default=56)
@@ -165,9 +194,11 @@ if __name__ == "__main__":
     lens = torch.tensor([1 if s == "<不明>" else len(s) for s in vocab], dtype=torch.float32)
     R = dict(vars(a), vocab=Vt, windows=a.A + a.B)
     # 割り当ての例（ctx で同じ a にまとまった単位）
-    if a.assign == "ctx":
+    if a.assign != "random":
         freq = Counter(t for s in tr_stream for t in s)
-        R["examples"] = {k: [vocab[u] for u in sorted((pa == k).nonzero().flatten().tolist(), key=lambda u: -freq[u])[:8]] for k in range(3)}
+        top = lambda m: [vocab[u] for u in sorted(m.nonzero().flatten().tolist(), key=lambda u: -freq[u])[:8]]
+        R["examples_a"] = {k: top(pa == k) for k in range(3)}
+        R["examples_b"] = {k: top(pb == k) for k in range(3)}
 
     def windows(stream, step):
         W = []
