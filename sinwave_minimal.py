@@ -1,7 +1,7 @@
 """sinwave_minimal.py — 正弦の干渉と回折だけで作る文字列分類器（単独で動く 1 ファイル版）
 
 このファイルだけをコピーすれば使えます（依存は PyTorch のみ）。実験用のオプションは入れず、
-これまでの実験（NOTES.md、実験 01〜27）で分かっている「最も効率の良い構成」だけを実装しています。
+これまでの実験（NOTES.md、実験 01〜37）で分かっている「最も効率の良い構成」だけを実装しています。
 
     import sinwave_minimal as sw
 
@@ -12,14 +12,26 @@
     merged = sw.merge([net_a, net_b])                      # 別々に学習した技能を足すだけで融合
     merged = sw.merge([net_a])                             # 外せば完全に元どおり（取消）
 
+    # 語根（部品）の検出器: 例を 1 つも見せない新しい物を、部品の組み合わせとして認識する
+    roots = sw.train_roots(sw.SinWaveNet(n_slots=8), texts, [[0, 3], [1, 3], ...])   # 各文字列に含まれる部品
+    sw.compose(roots, ["..."], {"リンゴ": [0, 3], "ザクロ": [0, 5, 6]}, seen=["リンゴ"])
+
 しくみ（光の実験装置に例えると）
-    文字列 → 光にする → 照明 → 滲み層 → [Sin の板 → 回折] × 16 → レンズ → スクリーンの窓 → 答え
+    文字列 → 光にする（各文字の光がレイヤ全体を照らす）→ [Sin の板 → 回折] × 16 → レンズ → スクリーンの窓 → 答え
     学習するのは「Sin の板」の模様（区画ごとの 振幅 A と 初期位相 φ）と、窓ごとの背景光・全体の温度だけ。
     重み行列（ニューロンのマップ）は持たない。
 
 前提知識なしの解説は docs/introduction.md、実験の記録は NOTES.md。
 
 変更履歴（成果が出たらここを更新する）
+    1.1.0 (2026-10-17)  既定の入力を「各文字の光がレイヤ全体を照らす」方式に変更（input="wave"、実験30・33・35）。
+                        文字どうしの合わせ方は虹（位置ごとに周波数を少しずつずらす。隣どうしは干渉し、離れた文字どうしは干渉しない）。
+                        周波数を L と互いに素な歩幅で並べ直し、L=1024 で足りるようにした（計算 1/2〜1/4）。
+                        語根（部品）の検出器 train_roots / compose を追加（実験34・36）。
+                        性能（同じ合成課題、3 seed）:
+                          wave + rainbow (既定、L=1024): 技能単独 97.7±0.5%、2 技能の融合 94.6±0.8%
+                          wave + color   (L=1024)      : 技能単独 98.3±0.4%、2 技能の融合 95.3±1.0%（順序は表せない）
+                        v1.0 の保存ファイルは input="slot" として読み込める。
     1.0.0 (2026-10-14)  最初の版。文字=角速度の符号化、平均の滲み層、区画ごとの Sin レイヤ（ω 固定）、
                         遠方場での検出、背景光、任意の tilt 照明、並列光路の融合、光路の足し算・引き算。
                         性能（2 技能 × 4 クラスの合成課題、3 seed、experiments/bench_minimal.py）:
@@ -38,7 +50,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 # =============================================================================================
@@ -130,24 +142,25 @@ class SinWaveNet(nn.Module):
 
     n_slots  : スクリーンに並べる検出器（窓）の総数。融合する技能どうしで揃える
     own      : この技能が担当する検出器の番号（クラス）。融合する技能どうしで重ならないようにする
-    L        : レイヤ長（光の画素数）。2 の累乗が速い
-    S        : 1 文字の標本数。区別したい文字の種類より大きくする
+    L        : レイヤ長（光の画素数）。2 の累乗が速い。省略時は wave で 1024、slot で 2048
+    S        : （input="slot" のとき）1 文字の標本数。区別したい文字の種類より大きくする
     layers   : Sin の板の枚数
     patches  : 1 枚の板の区画数。区画ごとに (振幅, 初期位相) を学習する
     patterns : （input="slot" のとき）照明パターンの数。0 なら照明なし（計算 1 倍）。8 にすると tilt 照明（計算 8 倍）。
                融合して使うなら 8 を勧める（2 技能の融合で 86.9% → 93.1%）
     seed     : 板の初期模様の乱数
-    input    : 文字の入れ方。"slot"（v1.0。1 文字に S 画素の区画）/ "wave"（v1.1。各文字の光がレイヤ全体を照らす）
+    input    : 文字の入れ方。"wave"（v1.1 の既定。各文字の光がレイヤ全体を照らす）/ "slot"（v1.0。1 文字に S 画素の区画）
     mix      : （input="wave" のとき）文字どうしの合わせ方。"rainbow"（既定）/ "color" / "coh"（encode_wave を参照）
     max_chars: （input="wave" のとき）使う文字数
     V        : （input="wave" のとき）文字コードを V で割った余りで文字を区別する（ひらがな+カタカナなら 256）
     """
 
-    def __init__(self, n_slots: int, own: list[int] | None = None, L: int = 2048, S: int = 256,
+    def __init__(self, n_slots: int, own: list[int] | None = None, L: int | None = None, S: int = 256,
                  layers: int = 16, patches: int = 64, patterns: int = 0, seed: int = 0,
-                 input: str = "slot", mix: str = "rainbow", max_chars: int = 10, V: int = 256,
+                 input: str = "wave", mix: str = "rainbow", max_chars: int = 10, V: int = 256,
                  rb: float = 0.5, T: int = 8):
         super().__init__()
+        L = L or (1024 if input == "wave" else 2048)   # wave は L=1024 で足りる（実験35）
         self.n_slots, self.L, self.S = n_slots, L, S
         self.input, self.mix, self.max_chars, self.V, self.rb, self.T = input, mix, max_chars, V, rb, T
         if input not in ("slot", "wave"):
@@ -410,7 +423,9 @@ def save(net: SinWaveNet, path: str) -> None:
 
 def load(path: str, device=None) -> SinWaveNet:
     d = torch.load(path, map_location="cpu", weights_only=False)
-    net = SinWaveNet(**d["config"])            # v1.0 の保存ファイルは input="slot" として読める
+    cfg = dict(d["config"])
+    cfg.setdefault("input", "slot")            # v1.0 の保存ファイル（input が無い）は区画方式として読む
+    net = SinWaveNet(**cfg)
     net.load_state_dict(d["state"], strict=False)
     if d.get("root_prior") is not None:
         net.root_prior = d["root_prior"]

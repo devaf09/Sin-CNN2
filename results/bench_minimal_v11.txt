@@ -1,0 +1,8 @@
+seed 0: 単独 0.966  融合 0.932
+seed 1: 単独 0.982  融合 0.960
+seed 2: 単独 0.982  融合 0.946
+input=wave mix=rainbow L=1024 patterns=0: 単独 97.7±0.5  融合 94.6±0.8
+seed 0: 単独 0.974  融合 0.938
+seed 1: 単独 0.988  融合 0.972
+seed 2: 単独 0.986  融合 0.948
+input=wave mix=color L=1024 patterns=0: 単独 98.3±0.4  融合 95.3±1.0

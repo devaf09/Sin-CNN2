@@ -16,10 +16,10 @@ import sinwave_minimal as sw
 from sinwave.tasks import task_skills
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--patterns", type=int, default=8)
-ap.add_argument("--input", default="slot", help="slot (v1.0) / wave (v1.1)")
+ap.add_argument("--patterns", type=int, default=0)
+ap.add_argument("--input", default="wave", help="wave (v1.1 の既定) / slot (v1.0)")
 ap.add_argument("--mix", default="rainbow")
-ap.add_argument("--L", type=int, default=2048)
+ap.add_argument("--L", type=int, default=0, help="0 なら既定（wave 1024 / slot 2048）")
 ap.add_argument("--seeds", default="0,1,2")
 a = ap.parse_args()
 dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -29,7 +29,7 @@ for seed in map(int, a.seeds.split(",")):
     nets = []
     for i, ((x, y), _) in enumerate(sk):
         own = list(range(4 * i, 4 * i + 4))
-        nets.append(sw.train(sw.SinWaveNet(8, own, L=a.L, patterns=a.patterns, seed=seed + 100 * i, input=a.input, mix=a.mix, max_chars=10).to(dev), x, y, seed=seed))
+        nets.append(sw.train(sw.SinWaveNet(8, own, L=a.L or None, patterns=a.patterns, seed=seed + 100 * i, input=a.input, mix=a.mix, max_chars=10).to(dev), x, y, seed=seed))
     acc = lambda net, xs, ys: sum(p == t for p, t in zip(sw.predict(net, xs), ys)) / len(ys)
     al = st.mean(acc(n, te[0], te[1]) for n, (_, te) in zip(nets, sk))
     mg = acc(sw.merge(nets), sk[0][1][0] + sk[1][1][0], sk[0][1][1] + sk[1][1][1])

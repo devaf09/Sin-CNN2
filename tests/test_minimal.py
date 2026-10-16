@@ -25,7 +25,7 @@ def _reference(patterns, seed):
 
 def test_same_as_reference():
     for patterns in (0, 8):
-        net = sw.SinWaveNet(n_slots=8, L=512, S=64, layers=4, patches=16, patterns=patterns, seed=3)
+        net = sw.SinWaveNet(n_slots=8, L=512, S=64, layers=4, patches=16, patterns=patterns, seed=3, input="slot")
         ref = _reference(patterns, 3)
         with torch.no_grad():
             net.bias.copy_(torch.randn(8))
@@ -40,8 +40,8 @@ def test_same_as_reference():
 
 
 def test_merge_remove_combine_save():
-    a = sw.SinWaveNet(n_slots=4, own=[0, 1], L=512, S=64, layers=4, patches=16)
-    b = sw.SinWaveNet(n_slots=4, own=[2, 3], L=512, S=64, layers=4, patches=16, seed=1)
+    a = sw.SinWaveNet(n_slots=4, own=[0, 1], L=512, S=64, layers=4, patches=16, input="slot")
+    b = sw.SinWaveNet(n_slots=4, own=[2, 3], L=512, S=64, layers=4, patches=16, seed=1, input="slot")
     sw.train(a, ["あいう", "かきく"] * 20, [0, 1] * 20, steps=30)
     sw.train(b, ["さしす", "たちつ"] * 20, [2, 3] * 20, steps=30)
     m = sw.merge([a, b])
@@ -81,7 +81,7 @@ def test_wave_and_roots():
     m = sw.merge([a, b])                                             # wave どうしの融合
     assert set(sw.predict(m, texts[:4])) <= {0, 1, 2, 3}
     try:
-        sw.merge([a, sw.SinWaveNet(4, [2, 3], L=512, layers=2, patches=16)])   # slot と wave は混ぜられない
+        sw.merge([a, sw.SinWaveNet(4, [2, 3], L=512, layers=2, patches=16, input="slot")])   # slot と wave は混ぜられない
     except ValueError:
         pass
     else:
