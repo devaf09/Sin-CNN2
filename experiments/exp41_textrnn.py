@@ -49,12 +49,13 @@ if __name__ == "__main__":
     ap.add_argument("--steps", type=int, default=3000)
     ap.add_argument("--model", default="optical", help="optical / gru（実験47: 規模を変えた比較用の、重みの表を持つ小型ニューラルネット）")
     ap.add_argument("--hid", type=int, default=128, help="gru: 記憶の大きさ（埋め込みも同じ大きさ）")
+    ap.add_argument("--max_train", type=int, default=60000, help="訓練に使う件数（実験50: データを増やしたときの伸び方）")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(a.seed)
     data = str(pathlib.Path(__file__).resolve().parents[1] / "data" / "cc100_ja.txt")
-    tr, te, vocab, tr_docs, idx = load(data, a.n, 64, 60000, 10000, a.seed)
+    tr, te, vocab, tr_docs, idx = load(data, a.n, 64, a.max_train, 10000, a.seed)
     other = 63
     # 入力の文字の番号（出現順位）
     rank = {c: i for i, (c, _) in enumerate(Counter("".join(tr_docs)).most_common(a.V - 1))}

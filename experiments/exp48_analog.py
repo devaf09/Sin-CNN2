@@ -8,6 +8,8 @@
   det   : スクリーンの明るさに、平均の明るさに対して N(0, σ²) の雑音（検出器の雑音、評価のたびに変わる）
 不完全さはそれぞれ乱数を 5 回引いて平均する。
 --train_noise を付けると、学習中に fab と det の雑音を入れて学習する（雑音に慣れさせる）。
+実験49: --train_shift / --train_zerr で、学習中に位置のずれ・距離の誤差も入れる。--wmax で板の縞の細かさ ω の上限を下げる
+（既定 π = 2 画素周期の縞。粗い縞なら 1 画素ずれても位相がほとんど変わらない）。
 """
 import pathlib
 import sys
@@ -30,6 +32,9 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--steps", type=int, default=1500)
 ap.add_argument("--L", type=int, default=1024)
 ap.add_argument("--train_noise", type=float, default=0.0, help="学習中の作りのばらつき σ [rad]（検出器の雑音も同じ値）。0 なら理想の装置で学習")
+ap.add_argument("--train_shift", type=int, default=0, help="学習中の板ごとの位置のずれ（±画素、乱数）")
+ap.add_argument("--train_zerr", type=float, default=0.0, help="学習中の板の間隔の誤差（相対、乱数）")
+ap.add_argument("--wmax", type=float, default=math.pi, help="板の縞の細かさ ω の上限（既定 π）")
 ap.add_argument("--draws", type=int, default=5)
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
@@ -41,6 +46,10 @@ net = sw.SinWaveNet(16, L=a.L, max_chars=10, seed=a.seed).to(dev)
 Xtr, Xte = net.encode(xtr), net.encode(xte)
 Ytr, Yte = torch.tensor(ytr, device=dev), torch.tensor(yte, device=dev)
 L, Dn = net.L, net.A.shape[0]
+if a.wmax < math.pi:   # ω を対数一様の範囲 [2π/L, π] → [2π/L, wmax] に縮める（並び順はそのまま）
+    lo = math.log(2 * math.pi / L)
+    with torch.no_grad():
+        net.w.copy_(torch.exp(lo + (net.w.log() - lo) * (math.log(a.wmax) - lo) / (math.log(math.pi) - lo)))
 kx = 2 * math.pi * torch.fft.fftfreq(L, device=dev)
 kz = torch.sqrt((2 * math.pi) ** 2 - kx ** 2)
 
@@ -76,11 +85,14 @@ g = torch.Generator().manual_seed(a.seed)
 t0 = time.time()
 for s in range(a.steps):
     i = torch.randint(len(Ytr), (256,), generator=g).to(dev)
+    kw = {}
     if a.train_noise > 0:
-        fab = a.train_noise * torch.randn(Dn, L, generator=g).to(dev)
-        out = run(Xtr[i], fab=fab, det=a.train_noise, gen=g)
-    else:
-        out = run(Xtr[i])
+        kw.update(fab=a.train_noise * torch.randn(Dn, L, generator=g).to(dev), det=a.train_noise, gen=g)
+    if a.train_shift > 0:
+        kw.update(shift=torch.randint(-a.train_shift, a.train_shift + 1, (Dn,), generator=g))
+    if a.train_zerr > 0:
+        kw.update(zerr=(a.train_zerr * torch.randn(Dn, generator=g)).tolist())
+    out = run(Xtr[i], **kw)
     loss = F.cross_entropy(out, Ytr[i])
     opt.zero_grad(); loss.backward(); opt.step(); sched.step()
 
