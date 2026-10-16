@@ -34,6 +34,19 @@ from sinwave.model import Config, SinWave, char_phase
 GOLD = 0.6180339887
 STRIDE = 0   # 0: 周波数をそのまま使う。>0: f·STRIDE mod L（--stride で設定）
 CHORD = 1    # 1 文字あたりの周波数の本数（実験39、--chord で設定）
+RAD = None   # 実験40: 漢字の部品の和音。dict(V_id, comps=(V, Kmax) の部品番号 or -1)
+
+
+def load_radicals(path):
+    """KRADFILE（EDRDG、CC BY-SA 4.0）: 漢字 → 部品の列"""
+    import gzip
+    txt = gzip.open(path, "rb").read().decode("euc_jp", errors="replace")
+    out = {}
+    for line in txt.splitlines():
+        if line and not line.startswith("#") and " : " in line:
+            k, v = line.split(" : ")
+            out[k] = v.split()
+    return out
 
 
 def coprime_stride(L):
@@ -87,6 +100,27 @@ def make_fields(codes, theta, pos, mask, L, n, mode, mix, d0, dev):
         ph = ph + math.pi * (x - L / 2) ** 2 / d[..., None]                      # 点光源からの球面波（波長 1）
     amp = mask / mask.sum(1, keepdim=True).clamp(min=1).sqrt()                   # 全体の明るさを揃える
     w = torch.polar(amp[..., None].expand_as(ph), ph)                            # (B, n, L)
+    if RAD is not None:
+        # 実験40: 文字の光 = 自分の線（上位 V_id 字のみ）+ 部品の線。部品の線は文字の線と別の帯（V_id 以降）に置く
+        comps = RAD["comps"].to(dev)[codes]                                    # (B, n, Kmax)
+        has_id = (codes < RAD["V_id"]).float()
+        pos_term = (pos if mode == "pair" else 0)
+        w = w * has_id[..., None]
+        extra = ph - 2 * math.pi * f[..., None] * x / L
+        for j in range(comps.shape[-1]):
+            cj = comps[..., j]
+            valid = (cj >= 0).float()
+            fj = (RAD["V_id"] + cj.clamp(min=0)).float() * n + pos_term
+            if STRIDE:
+                fj = torch.remainder(fj * STRIDE, L)
+            w = w + torch.polar((amp * valid * RAD["beta"])[..., None].expand_as(ph),
+                                2 * math.pi * fj[..., None] * x / L + extra + 0.7 * (j + 1))
+        no_light = ((has_id == 0) & (comps[..., 0] < 0)).float()               # 部品も自分の線もない珍しい文字 → 「その他」の線
+        f_other = torch.remainder((torch.as_tensor(pos_term, device=dev, dtype=torch.float32) + (RAD["V_id"] - 1) * n)
+                                  * (STRIDE or 1), L) * torch.ones_like(codes, dtype=torch.float32)
+        w = w + torch.polar((amp * no_light)[..., None].expand_as(ph), 2 * math.pi * f_other[..., None] * x / L + extra)
+        norm = (has_id + (comps >= 0).float().sum(-1) * RAD["beta"] ** 2 + no_light).clamp(min=1).sqrt()
+        w = w / norm[..., None]
     if CHORD > 1:
         # 実験39: 1 文字を周波数 CHORD 本の「和音」にする。2 本目以降は文字コードから決まる固定の位置
         # （区別できる文字の数が組み合わせで増える。計算回数は同じ）。位置の情報は全部の線に同じように付く
@@ -158,6 +192,9 @@ if __name__ == "__main__":
     ap.add_argument("--paths", type=int, default=1, help="実験35: 光路を何本並べるか（幅）")
     ap.add_argument("--chord", type=int, default=1, help="実験39: 1 文字あたりの周波数の本数（和音）")
     ap.add_argument("--V", type=int, default=0, help="文字の番号の数を上書き（0 なら課題の既定）")
+    ap.add_argument("--radicals", action="store_true", help="実験40: 漢字を部品（KRADFILE）の和音で表す")
+    ap.add_argument("--rad_beta", type=float, default=1.0, help="実験40: 部品の線の強さ（自分の線 = 1）")
+    ap.add_argument("--V_id", type=int, default=512, help="実験40: 自分の線を持つ文字の数（出現順位の上位）")
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(a.seed)
@@ -168,7 +205,23 @@ if __name__ == "__main__":
     if a.max_train:
         xtr, ytr, xte, yte = xtr[:a.max_train], ytr[:a.max_train], xte[:a.max_train // 2], yte[:a.max_train // 2]
     steps = a.steps or (3000 if is_text else 1500)
-    enc = Encoder(n, cd["V"], cd["code"], xtr, from_end=is_text)
+    if a.radicals:
+        # すべての文字に番号を振り（出現順位）、上位 V_id 字だけ自分の線を持つ。漢字は部品の線も持つ
+        from collections import Counter as _C
+        allc = [c for c, _ in _C("".join(xtr + xte)).most_common()]
+        cd["V"] = len(allc) + 1
+    enc = Encoder(n, cd["V"], cd["code"], xtr + (xte if a.radicals else []), from_end=is_text)
+    if a.radicals:
+        krad = load_radicals(str(pathlib.Path(__file__).resolve().parents[1] / "data" / "krad" / "kradfile.gz"))
+        parts = sorted({p for v in krad.values() for p in v})
+        pid = {p: i for i, p in enumerate(parts)}
+        Kmax = max(len(v) for v in krad.values())
+        comps = torch.full((cd["V"], Kmax), -1, dtype=torch.long)
+        for c, code in enc.rank.items():
+            for j, p_ in enumerate(krad.get(c, [])):
+                comps[code, j] = pid[p_]
+        RAD = dict(V_id=a.V_id, comps=comps, beta=a.rad_beta)
+        n_kanji = sum(1 for c in enc.rank if c in krad)
     Ttr, Tte = enc.table(xtr), enc.table(xte)
     Ytr, Yte = torch.tensor(ytr), torch.tensor(yte)
     if a.stride:

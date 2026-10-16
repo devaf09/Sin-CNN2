@@ -60,6 +60,26 @@ class Loop:
         I = I / (I.mean(-1, keepdim=True) + 1e-12)
         return self.model.detect(I), u
 
+    def overlap(self, u_out, k):
+        """出力の光と文字 k の光の重なり |<u, w_k>|² / (|u|²|w_k|²)。1 なら出力が文字 k の光そのもの"""
+        w = self.waves[k]
+        num = (u_out * w.conj()).sum(-1).abs().pow(2)
+        return num / (u_out.abs().pow(2).sum(-1) * w.abs().pow(2).sum(-1) + 1e-12)
+
+    def correct(self, u_out, mode):
+        """出力の光を次の入力に戻す前の補正（実験38c）。
+        raw    : そのまま
+        filter : 空間フィルタ。レンズの後の面で、語彙の文字の周波数の位置だけ通す（他は捨てる）→ 明るさを戻す（増幅）
+        sharpen: filter の後、各文字の成分を振幅の 2 乗で強調（強い成分ほど強くなる増幅）
+        """
+        if mode == "raw":
+            return u_out
+        c = (u_out @ self.waves.conj().T) / self.L                        # 各文字の光の成分 (B, V)
+        if mode == "sharpen":
+            c = c * c.abs()                                                 # 振幅を 2 乗して位相は保つ
+        u = c @ self.waves                                                  # 文字の光だけで作り直す
+        return u / (u.abs().pow(2).mean(-1, keepdim=True) + 1e-24).sqrt()
+
     def purity(self, u_out, k):
         """出力の光のうち、文字 k の窓に入った割合"""
         far = torch.fft.fftshift(torch.fft.fft(u_out, norm="ortho"), dim=-1)
@@ -81,6 +101,8 @@ if __name__ == "__main__":
     ap.add_argument("--K", type=int, default=2, help="ピンポン: 循環させる文字数")
     ap.add_argument("--alpha", type=float, default=0.5, help="記憶: 前の出力の光を混ぜる割合")
     ap.add_argument("--L", type=int, default=1024)
+    ap.add_argument("--fid", type=float, default=0.0, help="実験38c: 出力の光を次の文字の光に近づける項の重み")
+    ap.add_argument("--fb", default="raw", help="記憶: 前の出力を戻す前の補正 raw / filter / sharpen")
     ap.add_argument("--D", type=int, default=16)
     ap.add_argument("--P", type=int, default=64)
     ap.add_argument("--steps", type=int, default=1500)
@@ -97,11 +119,14 @@ if __name__ == "__main__":
 
         def loss_fn():
             idx = torch.randint(K, (64,), device=dev)
-            lg, _ = loop.step(loop.waves[idx])
-            return F.cross_entropy(lg, nxt[idx])
+            lg, u_out = loop.step(loop.waves[idx])
+            loss = F.cross_entropy(lg, nxt[idx])
+            if a.fid > 0:   # 出力の光そのものを、次の文字の光に近づける（周波数成分をそろえる）
+                loss = loss + a.fid * (1 - loop.overlap(u_out, nxt[idx])).mean()
+            return loss
         train(loop, loss_fn, a.steps)
         with torch.no_grad():
-            for mode in ("raw", "clean"):
+            for mode in ("raw", "filter", "sharpen", "clean"):
                 u = loop.waves[:K].clone()                     # K 本の連鎖を同時に（各文字から開始）
                 cur = torch.arange(K, device=dev)
                 acc, pur = [], []
@@ -110,7 +135,7 @@ if __name__ == "__main__":
                     cur = nxt[cur]
                     acc.append(round((lg.argmax(1) == cur).float().mean().item(), 3))
                     pur.append(round(sum(loop.purity(u_out[i:i + 1], cur[i].item()) for i in range(K)) / K, 3))
-                    u = u_out if mode == "raw" else loop.waves[lg.argmax(1)]
+                    u = loop.waves[lg.argmax(1)] if mode == "clean" else loop.correct(u_out, mode)
                 R[f"{mode}_acc_by_step"] = acc
                 R[f"{mode}_purity_by_step"] = pur
     else:
@@ -123,23 +148,29 @@ if __name__ == "__main__":
             """start (B,) から steps_ 文字ぶん回す。戻り値: 点数のリスト、各時刻の正解"""
             B = len(start)
             prev = None
-            out, tgt = [], []
+            out, tgt, outs_u = [], [], []
             for t in range(steps_):
                 pos = (start + t) % n
                 x = loop.waves[S[pos]]
                 if prev is not None and alpha > 0:
                     x = (1 - alpha) * x + alpha * prev           # 案分: 今の文字の光と前の出力の光を混ぜる
                 lg, u_out = loop.step(x)
-                prev = u_out / (u_out.abs().pow(2).mean(-1, keepdim=True) + 1e-24).sqrt()
+                prev = loop.correct(u_out, a.fb)
+                prev = prev / (prev.abs().pow(2).mean(-1, keepdim=True) + 1e-24).sqrt()
                 out.append(lg)
+                outs_u.append(u_out)
                 tgt.append(S[(pos + 1) % n])
+            run.last_u = outs_u
             return out, tgt
 
         def loss_fn():
             start = torch.randint(n, (32,), device=dev)
             out, tgt = run(start, W + 2, a.alpha)
             # 最初の 2 文字は記憶の立ち上がりとして点数に入れない
-            return sum(F.cross_entropy(o, y) for o, y in zip(out[2:], tgt[2:])) / W
+            loss = sum(F.cross_entropy(o, y) for o, y in zip(out[2:], tgt[2:])) / W
+            if a.fid > 0:
+                loss = loss + a.fid * sum((1 - loop.overlap(u, y)).mean() for u, y in zip(run.last_u[2:], tgt[2:])) / W
+            return loss
         train(loop, loss_fn, a.steps)
         with torch.no_grad():
             out, tgt = run(torch.zeros(1, dtype=torch.long, device=dev), 3 * n, a.alpha)  # 「あ1」から 3 周回す
