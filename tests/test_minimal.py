@@ -69,7 +69,34 @@ def test_merge_remove_combine_save():
         raise AssertionError("担当が重なる融合はエラーになるはず")
 
 
+def test_wave_and_roots():
+    """v1.1: 文字をレイヤ全体に照らす入力（虹・色ごと・全部干渉）と、語根の検出器。"""
+    texts = ["あいう", "かきく", "あかさ", "いきし"] * 10
+    for mix, T in (("rainbow", 8), ("color", 6), ("coh", 1)):
+        net = sw.SinWaveNet(4, [0, 1], L=512, layers=2, patches=16, input="wave", mix=mix, max_chars=6)
+        assert tuple(net.encode(texts[:2]).shape) == (2, T, 512)
+        sw.train(net, texts, [0, 1] * 20, steps=5)
+    a = sw.SinWaveNet(4, [0, 1], L=512, layers=2, patches=16, input="wave")
+    b = sw.SinWaveNet(4, [2, 3], L=512, layers=2, patches=16, input="wave", seed=1)
+    m = sw.merge([a, b])                                             # wave どうしの融合
+    assert set(sw.predict(m, texts[:4])) <= {0, 1, 2, 3}
+    try:
+        sw.merge([a, sw.SinWaveNet(4, [2, 3], L=512, layers=2, patches=16)])   # slot と wave は混ぜられない
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("入力の設定が違う融合はエラーになるはず")
+    r = sw.train_roots(sw.SinWaveNet(3, L=512, layers=2, patches=16, input="wave"), texts, [[0], [1], [0, 2], [1, 2]] * 10, steps=5)
+    out = sw.compose(r, texts[:4], {"x": [0], "y": [1], "新": [0, 1]}, seen=["x", "y"], gamma=1.0)
+    assert len(out) == 4 and set(out) <= {"x", "y", "新"}
+    with tempfile.TemporaryDirectory() as d:                         # 部品の出やすさも保存される
+        path = os.path.join(d, "r.pt")
+        sw.save(r, path)
+        assert torch.equal(sw.load(path).root_prior, r.root_prior)
+
+
 if __name__ == "__main__":
     test_same_as_reference()
     test_merge_remove_combine_save()
+    test_wave_and_roots()
     print("ok")

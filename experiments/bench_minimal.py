@@ -17,6 +17,9 @@ from sinwave.tasks import task_skills
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--patterns", type=int, default=8)
+ap.add_argument("--input", default="slot", help="slot (v1.0) / wave (v1.1)")
+ap.add_argument("--mix", default="rainbow")
+ap.add_argument("--L", type=int, default=2048)
 ap.add_argument("--seeds", default="0,1,2")
 a = ap.parse_args()
 dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -26,11 +29,11 @@ for seed in map(int, a.seeds.split(",")):
     nets = []
     for i, ((x, y), _) in enumerate(sk):
         own = list(range(4 * i, 4 * i + 4))
-        nets.append(sw.train(sw.SinWaveNet(8, own, patterns=a.patterns, seed=seed + 100 * i).to(dev), x, y, seed=seed))
+        nets.append(sw.train(sw.SinWaveNet(8, own, L=a.L, patterns=a.patterns, seed=seed + 100 * i, input=a.input, mix=a.mix, max_chars=10).to(dev), x, y, seed=seed))
     acc = lambda net, xs, ys: sum(p == t for p, t in zip(sw.predict(net, xs), ys)) / len(ys)
     al = st.mean(acc(n, te[0], te[1]) for n, (_, te) in zip(nets, sk))
     mg = acc(sw.merge(nets), sk[0][1][0] + sk[1][1][0], sk[0][1][1] + sk[1][1][1])
     alone.append(al * 100); merged.append(mg * 100)
     print(f"seed {seed}: 単独 {al:.3f}  融合 {mg:.3f}", flush=True)
 se = lambda v: st.stdev(v) / len(v) ** 0.5 if len(v) > 1 else 0
-print(f"patterns={a.patterns}: 単独 {st.mean(alone):.1f}±{se(alone):.1f}  融合 {st.mean(merged):.1f}±{se(merged):.1f}")
+print(f"input={a.input} mix={a.mix} L={a.L} patterns={a.patterns}: 単独 {st.mean(alone):.1f}±{se(alone):.1f}  融合 {st.mean(merged):.1f}±{se(merged):.1f}")

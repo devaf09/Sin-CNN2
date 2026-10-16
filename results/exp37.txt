@@ -1,0 +1,5 @@
+{"task": "copy", "read": "mix", "L": 4096, "D": 16, "P": 64, "steps": 1500, "seed": 0, "per_position": [1.0, 1.0, 1.0, 1.0], "char_acc": 1.0, "string_acc": 1.0, "sec": 167.9}
+{"task": "shift", "read": "mix", "L": 4096, "D": 16, "P": 64, "steps": 1500, "seed": 0, "per_position": [1.0, 1.0, 1.0, 1.0], "char_acc": 1.0, "string_acc": 1.0, "sec": 168.0}
+{"task": "reverse", "read": "mix", "L": 4096, "D": 16, "P": 64, "steps": 1500, "seed": 0, "per_position": [1.0, 0.999, 0.996, 1.0], "char_acc": 0.9987, "string_acc": 0.995, "sec": 168.1}
+{"task": "reverse", "read": "shared", "L": 4096, "D": 16, "P": 64, "steps": 1500, "seed": 0, "per_position": [0.725, 0.666, 0.694, 0.73], "char_acc": 0.7038, "string_acc": 0.224, "sec": 52.1}
+{"task": "reverse", "read": "code", "L": 4096, "D": 16, "P": 64, "steps": 1500, "seed": 0, "per_position": [0.054, 0.06, 0.051, 0.064], "char_acc": 0.0573, "string_acc": 0.0, "sec": 167.1}
