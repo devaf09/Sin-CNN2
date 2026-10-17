@@ -1,0 +1,5 @@
+{"read": "beat", "n": 8, "rb": 1.0, "T": 20, "dmax": 7, "L": 1024, "V": 512, "D": 16, "P": 64, "steps": 3000, "max_train": 60000, "seed": 0, "acc": 38.96, "ce": 2.834, "params": 3074, "sec": 424.4}
+{"read": "mean", "n": 8, "rb": 0.5, "T": 8, "dmax": 7, "L": 1024, "V": 512, "D": 16, "P": 64, "steps": 3000, "max_train": 60000, "seed": 0, "acc": 38.14, "ce": 2.888, "params": 2178, "sec": 170.5}
+{"read": "mean", "n": 8, "rb": 0.0, "T": 1, "dmax": 7, "L": 1024, "V": 512, "D": 16, "P": 64, "steps": 3000, "max_train": 60000, "seed": 0, "acc": 36.9, "ce": 3.005, "params": 2178, "sec": 49.4}
+{"read": "beat", "n": 4, "rb": 1.0, "T": 10, "dmax": 3, "L": 1024, "V": 512, "D": 16, "P": 64, "steps": 3000, "max_train": 60000, "seed": 0, "acc": 39.25, "ce": 2.715, "params": 2562, "sec": 215.0}
+{"read": "beat", "n": 8, "rb": 1.0, "T": 20, "dmax": 7, "L": 1024, "V": 512, "D": 32, "P": 256, "steps": 6000, "max_train": 60000, "seed": 0, "acc": 41.68, "ce": 2.625, "params": 17410, "sec": 1640.6}
