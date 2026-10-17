@@ -18,12 +18,13 @@ import sinwave_minimal as sw
 
 # 一番かんたんな使い方（v1.2）: データから設定を自動で選び、作って学習する。ラベルは名前のままでよい
 net = sw.fit(texts, labels)                 # 例: labels = ["挨拶", "天気", ...]
+net = sw.fit(texts, labels, order_matters=True)   # 文字の並び・離れた文字どうしの関係が効くとき → うなり読み（v1.3）
 sw.predict_labels(net, ["こんにちは"])       # → ["挨拶"]
 print(sw.summary(net))                      # 選んだ設定と大きさ
 print(net.auto_reasons)                     # なぜその設定にしたか（文字数・V・L・文字の合わせ方・大きさ）
 sw.evaluate(net, test_texts, test_labels)   # 正解率
 
-# 自分で決めるとき: 大きさは size="small" / "medium" / "large"、文字の合わせ方は mix="rainbow" / "color" / "coh"
+# 自分で決めるとき: 大きさは size="small" / "medium" / "large"、文字の合わせ方は mix="rainbow" / "color" / "coh" / "beat"
 net = sw.SinWaveNet(n_slots=4, size="medium", mix="color")
 
 # 検出器 8 個のうち、技能 A は 0〜3 番、技能 B は 4〜7 番を担当する。ラベルは検出器の番号
@@ -47,6 +48,7 @@ sw.compose(roots, ["..."], {"リンゴ": [0, 3, 5], "トマト": [1, 3, 6], "ザ
 
 | バージョン | 構成 | 技能単独 | 2 技能の融合 |
 |---|---|---|---|
+| **1.3.0** | **うなり読み（`mix="beat"`）**: 虹の明るさを時間方向にフーリエ変換し、文字どうしの距離に比例する「うなり」を読む（FMCW レーダーと同じ原理、実験51）。離れた文字どうしの距離・順序と文字の頻度を同時に扱える（距離の課題 100%、虹は 52%）。計算は虹の約 2.5 倍 | **98.1 ± 0.5** | **95.2 ± 1.0** |
 | 1.2.0 | 1.1.0 と同じ学習器に、自動調整（auto_config・fit）、大きさの選択（size）、名前のラベル、evaluate・summary を追加 | （1.1.0 と同じ） | （1.1.0 と同じ） |
 | **1.1.0** | **各文字の光がレイヤ全体を照らす入力（`input="wave"`）、虹（位置ごとに周波数を少しずつずらす、`mix="rainbow"`）、周波数を L と互いに素な歩幅で並べ直して L=1024**。語根の検出器 | **97.7 ± 0.5** | **94.6 ± 0.8** |
 | 1.1.0 | 同、文字ごとに別の色（`mix="color"`。順序は表せない） | 98.3 ± 0.4 | 95.3 ± 1.0 |

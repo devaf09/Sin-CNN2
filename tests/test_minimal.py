@@ -113,7 +113,24 @@ def test_auto_and_fit():
     assert sw.SinWaveNet(2, size="large").A.shape == (32, 256)
 
 
+def test_beat():
+    """v1.3: うなり読み。設定の自動変更、読み出しの形、保存・読み込み、自動調整での選択。"""
+    net = sw.SinWaveNet(4, L=256, layers=2, patches=16, mix="beat", max_chars=6)
+    assert net.rb == 1.0 and net.T == 12 and net.beat_re.shape == (4, 5)
+    with torch.no_grad():
+        net.beat_re.normal_(); net.beat_im.normal_()
+    x = net.encode(TEXTS)
+    assert x.shape == (4, 12, 256) and net(x).shape == (4, 4)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "b.pt")
+        sw.save(net, path)
+        assert torch.allclose(sw.load(path)(x), net(x), atol=1e-5)
+    assert sw.SinWaveNet(4, L=256, layers=2, patches=16).beat_re.shape == (4, 0)   # beat 以外では増えない
+    assert sw.auto_config(TEXTS, order_matters=True)["config"]["mix"] == "beat"
+
+
 if __name__ == "__main__":
+    test_beat()
     test_same_as_reference()
     test_auto_and_fit()
     test_merge_remove_combine_save()

@@ -1,7 +1,7 @@
 """sinwave_minimal.py — 正弦の干渉と回折だけで作る文字列分類器（単独で動く 1 ファイル版）
 
 このファイルだけをコピーすれば使えます（依存は PyTorch のみ）。実験用のオプションは入れず、
-これまでの実験（NOTES.md、実験 01〜37）で分かっている「最も効率の良い構成」だけを実装しています。
+これまでの実験（NOTES.md、実験 01〜52）で分かっている「最も効率の良い構成」だけを実装しています。
 
     import sinwave_minimal as sw
 
@@ -28,6 +28,13 @@
 前提知識なしの解説は docs/introduction.md、実験の記録は NOTES.md。
 
 変更履歴（成果が出たらここを更新する）
+    1.3.0 (2026-10-20)  mix="beat"（うなり読み、実験51）を追加。虹の明るさを平均せず時間方向にフーリエ変換し、
+                        文字どうしの距離に比例する周波数の「うなり」を読む（FMCW レーダーと同じ原理）。
+                        離れた文字どうしの関係（距離・どちらが先か）と文字の頻度を同時に扱える。
+                        性能（3 seed）: 「あ と い が何文字離れているか × どちらが先か」8 クラス 100%（虹 52%）、
+                        16 クラスの文字頻度 93.8%（虹 93.1%）。計算は虹の約 2.5 倍、学習する数は窓ごとに 2·(文字数−1) 個増える。
+                        2 技能の融合（experiments/bench_minimal.py --mix beat、3 seed）: 技能単独 98.1±0.5%、融合 95.2±1.0%（虹 97.7 / 94.6）。
+                        auto_config は order_matters=True のとき beat を選ぶ。本物の文章の次の文字には効かない（実験52）。
     1.2.0 (2026-10-18)  使いやすさの改良（学習器の中身は 1.1.0 と同じ）。
                         size="small"/"medium"/"large" で大きさをまとめて選べる。
                         auto_config(texts, labels): データから設定（文字数・V・L・文字の合わせ方・大きさ・学習回数）を選び、理由も返す。
@@ -59,7 +66,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 
 # =============================================================================================
@@ -95,6 +102,7 @@ def encode_wave(texts: list[str], L: int, n: int, mix: str = "rainbow", V: int =
     文字 c は、レイヤ全体に広がる平面波 exp(j·(2π·f·x/L + θ_c + 2π·0.618·m))。
       f = (文字コード mod V)·n·g mod L（g は L と互いに素な歩幅）、θ_c = 文字ごとの固定の位相、m = 文字の位置
     文字どうしの合わせ方 mix:
+      beat   : 虹と同じ光（rb=1, T=2n）。読み方だけ違う（SinWaveNet が明るさのうなりを読む。v1.3、実験51）
       coh    : 全部干渉させる（T=1、計算 1 倍。順序に強い）
       color  : 文字ごとに別の色（干渉しない。T=n。文字の頻度に最も強いが、順序は表せない）
       rainbow: 位置 m の光の周波数を m·rb だけずらし、時間 T 標本で平均（虹）。隣の文字どうしは干渉し、
@@ -116,13 +124,13 @@ def encode_wave(texts: list[str], L: int, n: int, mix: str = "rainbow", V: int =
         U = W.sum(1, keepdim=True)
     elif mix == "color":
         U = W
-    elif mix == "rainbow":
+    elif mix in ("rainbow", "beat"):
         tau = torch.arange(T, dtype=torch.float32)
         m = torch.arange(n, dtype=torch.float32)
         code = torch.exp(1j * (2 * math.pi * rb * m[None, :] * tau[:, None] / T)).to(torch.complex64)  # (T, n)
         U = torch.einsum("tn,bnl->btl", code, W)
     else:
-        raise ValueError("mix は coh / color / rainbow")
+        raise ValueError("mix は coh / color / rainbow / beat")
     return U.to(device)
 
 
@@ -163,7 +171,8 @@ class SinWaveNet(nn.Module):
                融合して使うなら 8 を勧める（2 技能の融合で 86.9% → 93.1%）
     seed     : 板の初期模様の乱数
     input    : 文字の入れ方。"wave"（v1.1 の既定。各文字の光がレイヤ全体を照らす）/ "slot"（v1.0。1 文字に S 画素の区画）
-    mix      : （input="wave" のとき）文字どうしの合わせ方。"rainbow"（既定）/ "color" / "coh"（encode_wave を参照）
+    mix      : （input="wave" のとき）文字どうしの合わせ方。"rainbow"（既定）/ "color" / "coh" / "beat"（encode_wave を参照）。
+               "beat" はうなり読み（v1.3）: 離れた文字どうしの距離・順序が答えに効くとき。rb=1、T=2·max_chars に自動で設定する
     max_chars: （input="wave" のとき）使う文字数
     V        : （input="wave" のとき）文字コードを V で割った余りで文字を区別する（ひらがな+カタカナなら 256）
     size     : 大きさをまとめて選ぶ。"small"（16 枚 × 64 区画、約 2000 個）/ "medium"（24 × 128、約 6000 個）/
@@ -181,6 +190,8 @@ class SinWaveNet(nn.Module):
                 raise ValueError(f"size は {list(SIZES)} のどれか")
             layers, patches = SIZES[size]
         L = L or (1024 if input == "wave" else 2048)   # wave は L=1024 で足りる（実験35）
+        if mix == "beat":   # うなりの周波数 d（= 文字の距離）が時間の標本の上で重ならないように
+            rb, T = 1.0, max(T, 2 * max_chars)
         self.n_slots, self.L, self.S = n_slots, L, S
         self.input, self.mix, self.max_chars, self.V, self.rb, self.T = input, mix, max_chars, V, rb, T
         if input not in ("slot", "wave"):
@@ -213,6 +224,10 @@ class SinWaveNet(nn.Module):
         # --- 検出器（学習するのは温度と背景光だけ）------------------------------------------
         self.gain = nn.Parameter(torch.tensor(5.0))                   # 明るさ → スコアの倍率
         self.bias = nn.Parameter(torch.zeros(n_slots))                # 窓ごとの背景光（クラスの起こりやすさ）
+        # うなり読み（mix="beat"）: 窓ごとに、距離 d のうなりの成分（実部・虚部）の重み。どちらが先かは位相に出る
+        nb = max_chars - 1 if (input == "wave" and mix == "beat") else 0
+        self.beat_re = nn.Parameter(torch.zeros(n_slots, nb))
+        self.beat_im = nn.Parameter(torch.zeros(n_slots, nb))
 
         # --- 回折（固定）: 角スペクトル法。波長 1、板の間隔 64 画素 ---------------------------
         kx = 2 * math.pi * torch.fft.fftfreq(L)                       # 横方向の空間周波数
@@ -241,6 +256,11 @@ class SinWaveNet(nn.Module):
     # -------------------------------------------------------------------------------------
     def intensity(self, u: torch.Tensor) -> torch.Tensor:
         """光の場 (N, L)（slot）または (N, T, L)（wave）→ スクリーンの明るさ (N, L)（平均 1）。"""
+        inten = self.screen(u).mean(1)                                # 明るさ、照明パターン・時間について平均
+        return inten / (inten.mean(-1, keepdim=True) + 1e-12)
+
+    def screen(self, u: torch.Tensor) -> torch.Tensor:
+        """光の場 → 照明パターン・時間の標本ごとのスクリーンの明るさ (N, T, L)（平均する前）。"""
         if u.dim() == 2:   # slot: 照明と滲み層
             u = u[:, None] * self.illum[None]                         # 照明パターンごとに (N, P, L)
             # 滲み層: 前後の文字（±S 画素）との平均。文字そのものの縞は残し、位置の雑音を弱める（実験18c）
@@ -256,8 +276,7 @@ class SinWaveNet(nn.Module):
             # 増幅: 平均の明るさを 1 に戻す（値が潰れたり発散したりしないように）
             u = u / (u.abs().pow(2).mean(-1, keepdim=True) + 1e-24).sqrt()   # 全部 0 でも微分が壊れないように
         u = torch.fft.fftshift(torch.fft.fft(u, norm="ortho"), dim=-1)  # レンズ: 同じ向きの光を 1 点に集める
-        inten = u.abs().pow(2).mean(1)                                # 明るさ、照明パターンについて平均
-        return inten / (inten.mean(-1, keepdim=True) + 1e-12)
+        return u.abs().pow(2)
 
     @torch.no_grad()
     def trace(self, u: torch.Tensor) -> dict:
@@ -285,7 +304,16 @@ class SinWaveNet(nn.Module):
 
     def forward(self, u: torch.Tensor) -> torch.Tensor:
         """光の場 (N, L) → 検出器ごとのスコア (N, n_slots)。"""
-        return self.gain * (self.intensity(u) @ self.det.T) + self.bias
+        if self.beat_re.shape[1] == 0:
+            return self.gain * (self.intensity(u) @ self.det.T) + self.bias
+        # うなり読み: 時間の標本ごとの明るさを時間方向にフーリエ変換。成分 0 = 平均の明るさ、成分 d = d 文字離れた文字の組のうなり
+        I = self.screen(u)
+        I = I / (I.mean((1, 2), keepdim=True) + 1e-12)
+        Sp = torch.fft.fft(I, dim=1) / I.shape[1]
+        out = Sp[:, 0].real @ self.det.T
+        for d in range(1, self.beat_re.shape[1] + 1):
+            out = out + self.beat_re[:, d - 1] * (Sp[:, d].real @ self.det.T) + self.beat_im[:, d - 1] * (Sp[:, d].imag @ self.det.T)
+        return self.gain * out + self.bias
 
     def encode(self, texts: list[str], device=None) -> torch.Tensor:
         """文字列 → 光の場（既定ではこの光路と同じ装置上）。長すぎる文字列には警告を出す。"""
@@ -358,7 +386,7 @@ def predict_labels(net, texts: list[str]) -> list:
 def summary(net) -> str:
     """設定と大きさを 1 行で。"""
     c = net.config
-    kb = (net.A.numel() * 2 + 1 + net.bias.numel()) * 4 / 1024
+    kb = (net.A.numel() * 2 + 1 + net.bias.numel() + net.beat_re.numel() * 2) * 4 / 1024
     form = f"wave/{c['mix']} 文字数{c['max_chars']} V={c['V']}" if c["input"] == "wave" else f"slot S={c['S']} 照明{c['patterns']}"
     return (f"SinWave {__version__}: 板 {c['layers']} 枚 × 区画 {c['patches']}、L={c['L']}、入力 {form}、"
             f"窓 {c['n_slots']} 個（担当 {len(net.own)}）、学習するパラメータ {sum(p.numel() for p in net.parameters())} 個（約 {kb:.0f}KB）")
@@ -373,7 +401,7 @@ def auto_config(texts: list[str], labels: list | None = None, order_matters: boo
                 speed: str = "normal") -> dict:
     """データから設定を選ぶ。戻り値: dict(config=SinWaveNet に渡す設定, steps=学習の回数の目安, reasons=理由の列)
 
-    order_matters: 文字の並び（順序）が答えに効くか。True → 虹、False → 色ごと、None（分からない）→ 虹
+    order_matters: 文字の並び（順序・離れた文字どうしの関係）が答えに効くか。True → うなり読み、False → 色ごと、None（分からない）→ 虹
     speed        : "fast" なら計算 1 倍の構成（全部干渉・small）を選ぶ
     """
     reasons = []
@@ -400,9 +428,12 @@ def auto_config(texts: list[str], labels: list | None = None, order_matters: boo
     elif order_matters is False:
         mix = "color"
         reasons.append("順序は効かない → 文字ごとに色（文字頻度で最良 95%、実験30。計算は文字数倍）")
+    elif order_matters:
+        mix = "beat"
+        reasons.append("順序が効く → うなり読み（離れた文字どうしの距離・順序と頻度を同時に、実験51。計算は文字数の 2 倍）")
     else:
         mix = "rainbow"
-        reasons.append("順序が効く（または不明）→ 虹（順序と頻度を両立、実験33。計算は 8 倍）")
+        reasons.append("順序が効くか不明 → 虹（隣どうしの順序と頻度を両立、実験33。計算は 8 倍）")
     N = len(texts)
     size = "small" if speed == "fast" or N < 2000 else ("medium" if N < 20000 else "large")
     reasons.append(f"学習データ {N} 件 → 大きさ {size}（少ないデータで大きくすると丸暗記しやすい）")
@@ -551,7 +582,7 @@ def compose(net: SinWaveNet, texts: list[str], classes: dict, seen: list | None 
 def save(net: SinWaveNet, path: str) -> None:
     """学習した値（A, φ, 温度, 背景光）と設定だけを保存する（1 技能 約 10KB）。ω などの固定部品は設定から作り直す。"""
     torch.save({"version": __version__, "config": dict(net.config, own=net.own),
-                "state": {k: v for k, v in net.state_dict().items() if k in ("A", "phi", "gain", "bias")},
+                "state": {k: v for k, v in net.state_dict().items() if k in ("A", "phi", "gain", "bias", "beat_re", "beat_im")},
                 "root_prior": getattr(net, "root_prior", None), "classes": getattr(net, "classes", None)}, path)
 
 
